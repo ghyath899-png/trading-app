@@ -47,7 +47,7 @@ symbol_display = st.sidebar.selectbox(
     ],
 )
 
-# ربط الرمز المختار برمز Twelve Data الصحيح
+# ربط الرمز المختار بررمز Twelve Data الصحيح
 symbol_map = {
     "XAUUSD (الذهب)": "XAU/USD",
     "USTEC (ناسداك)": "NDX",
@@ -61,6 +61,33 @@ timeframe = st.sidebar.selectbox(
     "الإطار الزمني (Interval)", ["5min", "15min", "1h"]
 )
 
+# ==========================================
+# دالة إرسال الإشعارات للتليجرام
+# ==========================================
+def send_telegram_alert(message):
+    if TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID:
+        url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+        payload = {
+            "chat_id": TELEGRAM_CHAT_ID,
+            "text": message,
+            "parse_mode": "Markdown",
+        }
+        try:
+            requests.post(url, json=payload, timeout=5)
+        except Exception as e:
+            st.error(f"فشل إرسال التنبيه عبر تليجرام: {e}")
+
+# ==========================================
+# زر اختبار التليجرام (مضاف هنا في القائمة الجانبية)
+# ==========================================
+st.sidebar.markdown("---")
+if st.sidebar.button("🧪 اختبار إرسال التليجرام"):
+    if TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID:
+        test_msg = "✅ *تم الاتصال بنجاح!*\n\nنظام صائد الصفقات جاهز ومربوط بحسابك، ستصلك التنبيهات هنا فور تحقق الشروط."
+        send_telegram_alert(test_msg)
+        st.sidebar.success("تم إرسال رسالة تجريبية! تحقق من التليجرام.")
+    else:
+        st.sidebar.error("يرجى التأكد من إضافة المفاتيح في Secrets أولاً.")
 
 # ==========================================
 # 3. دالة جلب البيانات الحية من Twelve Data
@@ -95,26 +122,8 @@ def get_live_data(symbol, interval):
         st.error(f"حدث خطأ أثناء الاتصال بالشبكة: {e}")
         return None
 
-
 # ==========================================
-# 4. دالة إرسال الإشعارات للتليجرام
-# ==========================================
-def send_telegram_alert(message):
-    if TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID:
-        url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-        payload = {
-            "chat_id": TELEGRAM_CHAT_ID,
-            "text": message,
-            "parse_mode": "Markdown",
-        }
-        try:
-            requests.post(url, json=payload, timeout=5)
-        except Exception as e:
-            st.error(f"فشل إرسال التنبيه عبر تليجرام: {e}")
-
-
-# ==========================================
-# 5. الواجهة الرئيسية والتحليل
+# 4. الواجهة الرئيسية والتحليل
 # ==========================================
 st.title("🛡️ نظام صائد الصفقات القوية (SMC Sweeps & FVG Reversals)")
 st.caption(f"الرمز المالي المختار حالياً: **{symbol_display}** | الفريم: **{timeframe}**")
