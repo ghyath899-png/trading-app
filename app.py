@@ -27,7 +27,7 @@ TF_CFG = {
     "M15": ("15m", "10d"),
 }
 
-MODELS = ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-2.5-flash-lite"]
+MODELS = ["gemini-3.5-flash", "gemini-3.5-flash-lite"]
 
 
 # ---------------- البيانات ----------------
