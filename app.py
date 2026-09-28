@@ -1,5 +1,5 @@
 import pandas as pd
-import pandas_ta as ta
+import ta
 import requests
 import streamlit as st
 from streamlit_autorefresh import st_autorefresh
