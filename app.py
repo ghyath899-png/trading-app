@@ -5,9 +5,9 @@ import streamlit as st
 from streamlit_autorefresh import st_autorefresh
 import ta
 
-# ================= =================
+# ==========================================
 # 1. إعدادات الصفحة وجلب المفاتيح بأمان
-# ================= =================
+# ==========================================
 st.set_page_config(
     page_title="SMC Sweeps & FVG Trading Bot", page_icon="📈", layout="wide"
 )
@@ -22,9 +22,9 @@ TWELVE_DATA_API_KEY = st.secrets.get(
 # تحديث الشاشة تلقائياً كل 10 ثوانٍ
 st_autorefresh(interval=10000, key="datarefresh")
 
-# ================= =================
+# ==========================================
 # 2. القائمة الجانبية (Sidebar)
-# ================= =================
+# ==========================================
 st.sidebar.title("⚙️ إعدادات المنظومة")
 
 # خيارات استثنائية لإدخال المفاتيح يدويًا إن لم تكن في Secrets
@@ -52,7 +52,7 @@ symbol_map = {
     "XAUUSD (الذهب)": "XAU/USD",
     "USTEC (ناسداك)": "NDX",
     "BTCUSD (البيتكوين)": "BTC/USD",
-    "GBPJPY (الباوند ين)": "GBP/USD",
+    "GBPJPY (الباوند ين)": "GBP/JPY",
     "EURUSD (اليورو دولار)": "EUR/USD",
 }
 selected_symbol = symbol_map[symbol_display]
@@ -62,9 +62,9 @@ timeframe = st.sidebar.selectbox(
 )
 
 
-# ================= =================
+# ==========================================
 # 3. دالة جلب البيانات الحية من Twelve Data
-# ================= =================
+# ==========================================
 @st.cache_data(ttl=8)
 def get_live_data(symbol, interval):
     url = f"https://api.twelvedata.com/time_series?symbol={symbol}&interval={interval}&outputsize=50&apikey={TWELVE_DATA_API_KEY}"
@@ -74,8 +74,16 @@ def get_live_data(symbol, interval):
         if "values" in data:
             df = pd.DataFrame(data["values"])
             df["datetime"] = pd.to_datetime(df["datetime"])
-            for col in ["open", "high", "low", "close", "volume"]:
-                df[col] = df[col].astype(float)
+
+            # تحويل الأعمدة الأساسية المضمونة فقط
+            for col in ["open", "high", "low", "close"]:
+                if col in df.columns:
+                    df[col] = df[col].astype(float)
+
+            # تحويل الفوليوم إذا كان موجوداً فقط
+            if "volume" in df.columns:
+                df["volume"] = pd.to_numeric(df["volume"], errors="coerce")
+
             df = df.sort_values("datetime").reset_index(drop=True)
             return df
         else:
@@ -88,9 +96,9 @@ def get_live_data(symbol, interval):
         return None
 
 
-# ================= =================
+# ==========================================
 # 4. دالة إرسال الإشعارات للتليجرام
-# ================= =================
+# ==========================================
 def send_telegram_alert(message):
     if TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID:
         url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
@@ -105,9 +113,9 @@ def send_telegram_alert(message):
             st.error(f"فشل إرسال التنبيه عبر تليجرام: {e}")
 
 
-# ================= =================
+# ==========================================
 # 5. الواجهة الرئيسية والتحليل
-# ================= =================
+# ==========================================
 st.title("🛡️ نظام صائد الصفقات القوية (SMC Sweeps & FVG Reversals)")
 st.caption(f"الرمز المالي المختار حالياً: **{symbol_display}** | الفريم: **{timeframe}**")
 
@@ -129,7 +137,6 @@ if df is not None and len(df) >= 10:
     st.subheader("🎯 حالة الفرص المتاحة الآن")
 
     # خوارزمية تحليل الـ SMC (سحب السيولة Sweep + FVG)
-    # فحص الشموع الأخيرة
     last_candle = df.iloc[-1]
     prev_candle = df.iloc[-2]
     third_candle = df.iloc[-3]
@@ -182,6 +189,9 @@ if df is not None and len(df) >= 10:
 
     # عرض جدول البيانات الحية المحدثة
     with st.expander("📊 عرض آخر الشموع المحدثة"):
-        st.dataframe(
-            df[["datetime", "open", "high", "low", "close", "volume"]].tail(10)
-        )
+        cols_to_show = [
+            c
+            for c in ["datetime", "open", "high", "low", "close", "volume"]
+            if c in df.columns
+        ]
+        st.dataframe(df[cols_to_show].tail(10))
