@@ -9,7 +9,7 @@ import ta
 # 1. إعدادات الصفحة وجلب المفاتيح بأمان
 # ==========================================
 st.set_page_config(
-    page_title="Multi-Strategy Master SMC & Wyckoff Bot", page_icon="⚡", layout="wide"
+    page_title="Fast SMC & Price Action Bot", page_icon="⚡", layout="wide"
 )
 
 TELEGRAM_BOT_TOKEN = st.secrets.get("TELEGRAM_BOT_TOKEN", "")
@@ -26,7 +26,7 @@ if "active_trade" not in st.session_state:
 # ==========================================
 # 2. القائمة الجانبية (Sidebar)
 # ==========================================
-st.sidebar.title("🎯 إدارة المخاطر والصفقات الاحترافية")
+st.sidebar.title("🎯 إدارة الصفقات والسجل")
 
 if not TELEGRAM_BOT_TOKEN:
     TELEGRAM_BOT_TOKEN = st.sidebar.text_input("Telegram Bot Token", type="password")
@@ -53,7 +53,7 @@ symbol_map = {
 }
 selected_symbol = symbol_map[symbol_display]
 
-timeframe = st.sidebar.selectbox("الإطار الزمني (Interval)", ["15min", "5min", "1h"])
+timeframe = st.sidebar.selectbox("الإطار الزمني", ["5min", "15min", "1h"], index=0)
 
 if st.sidebar.button("🗑️ تصفير الذاكرة يدوياً"):
     st.session_state.active_trade = None
@@ -75,13 +75,13 @@ def send_telegram_alert(message):
 st.sidebar.markdown("---")
 if st.sidebar.button("🧪 اختبار تليجرام الاحترافي"):
     if TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID:
-        send_telegram_alert("⚡ *البوت الاحترافي المتعدد الاستراتيجيات جاهز ويعمل بكفاءة!*")
+        send_telegram_alert("⚡ *البوت السريع لمناطق الاهتمام والسعر اللحظي جاهز!*")
         st.sidebar.success("تم إرسال رسالة تجريبية!")
     else:
         st.sidebar.error("يرجى التأكد من إضافة المفاتيح في Secrets أولاً.")
 
 # ==========================================
-# 3. جلب البيانات وتجهيز خوارزميات الاستراتيجيات
+# 3. جلب البيانات وحساب مناطق الاهتمام (POI)
 # ==========================================
 @st.cache_data(ttl=8)
 def get_live_data(symbol, interval):
@@ -97,12 +97,9 @@ def get_live_data(symbol, interval):
                     df[col] = df[col].astype(float)
             df = df.sort_values("datetime").reset_index(drop=True)
             
-            # المؤشرات الفنية للـ System
             df["atr"] = ta.volatility.average_true_range(df["high"], df["low"], df["close"], window=14)
-            df["ema50"] = ta.trend.ema_indicator(df["close"], window=50)
-            df["ema200"] = ta.trend.ema_indicator(df["close"], window=200)
             df["ema9"] = ta.trend.ema_indicator(df["close"], window=9)
-            df["rsi"] = ta.momentum.rsi(df["close"], window=14)
+            df["ema21"] = ta.trend.ema_indicator(df["close"], window=21)
             return df
         else:
             return None
@@ -110,98 +107,71 @@ def get_live_data(symbol, interval):
         return None
 
 # ==========================================
-# 4. محرك التحليل الشامل (Multi-Strategy Engine)
+# 4. محرك الفرص السريعة (Fast Action Engine)
 # ==========================================
-st.title("⚡ غرفة التحليل الموسعة (SMC + Wyckoff + Patterns)")
-st.caption(f"الزوج: **{symbol_display}** | الفريم: **{timeframe}** | فحص النماذج ومراحل التلاعب ونسب النجاح")
+st.title("⚡ رادار الصفقات السريعة (Premium/Discount & POI)")
+st.caption(f"الزوج: **{symbol_display}** | الفريم: **{timeframe}** | اقتناص ارتدادات الدعم/المقاومة وكسر وإعادة الاختبار")
 
 df = get_live_data(selected_symbol, timeframe)
-df_htf = get_live_data(selected_symbol, "1h")
 
-if df is not None and len(df) >= 30 and df_htf is not None:
+if df is not None and len(df) >= 30:
     current_price = df["close"].iloc[-1]
     current_atr = df["atr"].iloc[-1]
     last_candle = df.iloc[-1]
     prev_candle = df.iloc[-2]
 
-    htf_bias = "BEARISH" if df_htf["close"].iloc[-1] < df_htf["ema50"].iloc[-1] else "BULLISH"
+    # حساب النطاق المحلي القريب (Local Range)
+    local_high = df["high"].iloc[-15:-1].max()
+    local_low = df["low"].iloc[-15:-1].min()
+    range_mid = (local_high + local_low) / 2.0
 
-    recent_high = df["high"].iloc[-25:-2].max()
-    recent_low = df["low"].iloc[-25:-2].min()
+    # تحديد منطقة السعر (Premium / Discount)
+    market_zone = "DISCOUNT (منطقة شراء)" if current_price < range_mid else "PREMIUM (منطقة بيع)"
 
     col1, col2, col3, col4 = st.columns(4)
     col1.metric("السعر الحالي", f"{current_price:.2f}")
-    col2.metric("اتجاه HTF", htf_bias)
-    col3.metric("سيولة القمة", f"{recent_high:.2f}")
-    col4.metric("سيولة القاع", f"{recent_low:.2f}")
+    col2.metric("حالة المنطقة", market_zone)
+    col3.metric("مقاومة/قمة سريعة", f"{local_high:.2f}")
+    col4.metric("دعم/قاع سريع", f"{local_low:.2f}")
 
     st.markdown("---")
 
-    # 1. حالة البحث عن الصفقات بجميع الاستراتيجيات
+    # 1. البحث عن الصفقات عند عدم وجود صفقة نشطة
     if st.session_state.active_trade is None:
-        st.subheader("🔍 فحص المخطط بالاستراتيجيات المتعددة...")
+        st.subheader("🔍 فحص السلوك السعري السريع (Price Action & POI)...")
 
         signal = None
         setup_name = ""
-        win_rate = "0%"
         sl = 0.0
         tp = 0.0
 
-        # أ) استراتيجية وايكوف Wyckoff - التجميع والتلاعب (Accumulation & Spring)
-        if last_candle["low"] < recent_low and last_candle["close"] > recent_low and df["rsi"].iloc[-1] < 35:
+        # أ) صفقة شراء: ارتداد من دعم قريب / منطقة الخصم Discount
+        if current_price < range_mid and last_candle["low"] <= local_low and last_candle["close"] > last_candle["open"]:
             signal = "BUY"
-            setup_name = "🏦 Wyckoff Spring (تجميع + تلاعب بقاع السيولة)"
-            win_rate = "88%" if htf_bias == "BULLISH" else "78%"
+            setup_name = "🟢 ارتداد من دعم سريع / منطقة خصم (Discount POI Bounce)"
             sl = last_candle["low"] - (current_atr * 0.3)
-            tp = recent_high
+            tp = local_high
 
-        # ب) استراتيجية وايكوف Wyckoff - التوزيع والتلاعب العلوي (Distribution & UTAD)
-        elif last_candle["high"] > recent_high and last_candle["close"] < recent_high and df["rsi"].iloc[-1] > 65:
+        # ب) صفقة شراء: كسر مقاومة وإعادة اختبار (Break & Retest)
+        elif prev_candle["close"] > local_high and last_candle["low"] <= local_high and last_candle["close"] > local_high:
+            signal = "BUY"
+            setup_name = "🚀 كسر وإعادة اختبار للقمة (Bullish Break & Retest)"
+            sl = local_high - (current_atr * 0.4)
+            tp = current_price + (abs(current_price - sl) * 2.0)
+
+        # ج) صفقة بيع: ارتداد من مقاومة قريبة / منطقة الغلاء Premium
+        elif current_price > range_mid and last_candle["high"] >= local_high and last_candle["close"] < last_candle["open"]:
             signal = "SELL"
-            setup_name = "🏦 Wyckoff UTAD (توزيع + تلاعب بقمة السيولة)"
-            win_rate = "88%" if htf_bias == "BEARISH" else "78%"
+            setup_name = "🔴 ارتداد من مقاومة سريعة / منطقة غلاء (Premium POI Rejection)"
             sl = last_candle["high"] + (current_atr * 0.3)
-            tp = recent_low
+            tp = local_low
 
-        # ج) استراتيجية SMC: فجوات القيمة العادلة FVG + كسر الهيكل CHoCH
-        elif signal is None:
-            # فجوة شرائية Fair Value Gap
-            fvg_buy = df["low"].iloc[-1] > df["high"].iloc[-3]
-            if fvg_buy and htf_bias == "BULLISH":
-                signal = "BUY"
-                setup_name = "📐 SMC Fair Value Gap (FVG + CHoCH Confirmation)"
-                win_rate = "82%"
-                sl = df["low"].iloc[-3] - (current_atr * 0.2)
-                tp = recent_high
-
-            # فجوة بيعية Fair Value Gap
-            fvg_sell = df["high"].iloc[-1] < df["low"].iloc[-3]
-            if fvg_sell and htf_bias == "BEARISH":
-                signal = "SELL"
-                setup_name = "📐 SMC Fair Value Gap (FVG + CHoCH Confirmation)"
-                win_rate = "82%"
-                sl = df["high"].iloc[-3] + (current_atr * 0.2)
-                tp = recent_low
-
-        # د) النماذج الفنية المؤكدة (Classic Patterns: Double Bottom / Double Top)
-        if signal is None:
-            # القاع المزدوج
-            double_bottom = abs(last_candle["low"] - prev_candle["low"]) < (current_atr * 0.1) and last_candle["close"] > last_candle["open"]
-            if double_bottom and htf_bias == "BULLISH":
-                signal = "BUY"
-                setup_name = "📊 نموذج القاع المزدوج المؤكد (Double Bottom Pattern)"
-                win_rate = "75%"
-                sl = min(last_candle["low"], prev_candle["low"]) - (current_atr * 0.25)
-                tp = recent_high
-
-            # القمة المزدوجة
-            double_top = abs(last_candle["high"] - prev_candle["high"]) < (current_atr * 0.1) and last_candle["close"] < last_candle["open"]
-            if double_top and htf_bias == "BEARISH":
-                signal = "SELL"
-                setup_name = "📊 نموذج القمة المزدوجة المؤكد (Double Top Pattern)"
-                win_rate = "75%"
-                sl = max(last_candle["high"], prev_candle["high"]) + (current_atr * 0.25)
-                tp = recent_low
+        # د) صفقة بيع: كسر دعم وإعادة اختبار (Break & Retest)
+        elif prev_candle["close"] < local_low and last_candle["high"] >= local_low and last_candle["close"] < local_low:
+            signal = "SELL"
+            setup_name = "📉 كسر وإعادة اختبار للقاع (Bearish Break & Retest)"
+            sl = local_low + (current_atr * 0.4)
+            tp = current_price - (abs(sl - current_price) * 2.0)
 
         if signal:
             st.session_state.active_trade = {
@@ -210,30 +180,28 @@ if df is not None and len(df) >= 30 and df_htf is not None:
                 "sl": sl,
                 "tp": tp,
                 "name": setup_name,
-                "win_rate": win_rate,
                 "be_notified": False,
                 "reversal_notified": False
             }
             
-            st.success(f"✅ تم رصد صفقة: {setup_name} | نسبة النجاح المتوقعة: {win_rate}")
+            st.success(f"✅ تم رصد فرصة سريعة: {setup_name}")
             
             msg = (
-                f"⚡ *تنبيه صفقة جديدة من محرك الاستراتيجيات*\n\n"
+                f"⚡ *تنبيه فرصة سريعة (Fast POI / Break & Retest)*\n\n"
                 f"📌 *الزوج:* {symbol_display}\n"
                 f"⏱️ *الفريم:* {timeframe}\n"
-                f"📊 *النموذج / الاستراتيجية:* {setup_name}\n"
-                f"🎯 *نسبة نجاح النموذج:* `{win_rate}`\n"
-                f"⚖️ *نوع الصفقة:* {signal}\n"
+                f"📊 *النموذج:* {setup_name}\n"
+                f"🏛️ *المنطقة:* {market_zone}\n"
+                f"⚖️ *النوع:* {signal}\n"
                 f"💵 *سعر الدخول:* {current_price:.2f}\n"
                 f"🛑 *وقف الخسارة:* {sl:.2f}\n"
-                f"🎯 *الهدف المستهدف:* {tp:.2f}\n"
-                f"🌐 *الاتجاه العام HTF:* {htf_bias}"
+                f"🎯 *الهدف المستهدف:* {tp:.2f}"
             )
             send_telegram_alert(msg)
         else:
-            st.info("جاري تحليل الحركة عبر نماذج (Wyckoff, FVG, SMC, النماذج الفنية).. لا توجد صفقات مؤكدة حالياً.")
+            st.info("جاري مراقبة الشموع الحالية لتشكل كسر/إعادة اختبار أو ارتداد مباشر من مستويات الاهتمام القريبة..")
 
-    # 2. حالة المراقبة النشطة الحية للصفقة
+    # 2. المراقبة النشطة الحية للصفقة
     else:
         active = st.session_state.active_trade
         entry_p = active["entry"]
@@ -241,8 +209,8 @@ if df is not None and len(df) >= 30 and df_htf is not None:
         pips_diff = (current_price - entry_p) if trade_type == "BUY" else (entry_p - current_price)
         target_dist = abs(active["tp"] - entry_p)
 
-        st.subheader(f"🛡️ المراقبة والرادار الحصري للصفقة: ({trade_type}) | النموذج: {active['name']}")
-        st.write(f"**نسبة نجاح الصفقة المقدرة:** `{active['win_rate']}` | **الدخول:** {entry_p:.2f} | **الحالي:** {current_price:.2f} | **الربح/الخسارة:** `{pips_diff:.2f}`")
+        st.subheader(f"🛡️ المراقبة الحية للصفقة: ({trade_type}) | {active['name']}")
+        st.write(f"**الدخول:** {entry_p:.2f} | **السعر الحالي:** {current_price:.2f} | **نتيجة النقاط:** `{pips_diff:.2f}`")
 
         hit_tp = (trade_type == "BUY" and current_price >= active["tp"]) or (trade_type == "SELL" and current_price <= active["tp"])
         hit_sl = (trade_type == "BUY" and current_price <= active["sl"]) or (trade_type == "SELL" and current_price >= active["sl"])
@@ -252,42 +220,41 @@ if df is not None and len(df) >= 30 and df_htf is not None:
 
         if hit_tp:
             st.balloons()
-            st.success("🎉 مبروك! تم تحقيق الهدف بالكامل.")
-            send_telegram_alert(f"🎉 *نجاح تام!* تم تحقيق الهدف لصفقة ({trade_type}) على {symbol_display} عند {current_price:.2f}.")
+            st.success("🎉 مبروك! تم تحقيق الهدف.")
+            send_telegram_alert(f"🎉 *نجاح!* تم وصول الهدف لصفقة ({trade_type}) على {symbol_display} عند {current_price:.2f}.")
             st.session_state.active_trade = None
 
         elif hit_sl:
             st.error("🛑 تم ضرب وقف الخسارة.")
-            send_telegram_alert(f"🛑 *تنبيه إغلاق:* تم ضرب الستوب لصفقة ({trade_type}) على {symbol_display}.")
+            send_telegram_alert(f"🛑 *تنبيه:* تم ضرب الستوب لصفقة ({trade_type}) على {symbol_display}.")
             st.session_state.active_trade = None
 
         elif (is_reversal_buy or is_reversal_sell) and not active.get("reversal_notified", False):
-            st.error("⚠️ تم رصد إشارة انعكاسية ضد اتجاه الصفقة!")
-            status_text = "على أرباح جزئية" if pips_diff > 0 else "بأقل خسارة ممكنة"
+            st.error("⚠️ إشارة ارتداد معاكس!")
+            status_text = "على أرباح جزئية" if pips_diff > 0 else "بأقل خسارة"
             
             rev_msg = (
-                f"⚠️ *تنبيه تحذيري: خطر انعكاس السوق!*\n\n"
+                f"⚠️ *تنبيه ارتداد سريع للسوق!*\n\n"
                 f"📌 *الزوج:* {symbol_display}\n"
-                f"📊 *الصفقة:* {trade_type} ({active['name']})\n"
-                f"💵 *السعر الحالي:* {current_price:.2f} (النتيجة: {pips_diff:.2f} نقطة)\n"
-                f"🚨 *السبب:* ظاهرة انعكاسية معاكسة للاتجاه.\n"
-                f"💡 *المنصح به:* الخروج اليدوي الآن {status_text} لتجنب ضرب الستوب الكامل."
+                f"📊 *الصفقة:* {trade_type} من سعر {entry_p:.2f}\n"
+                f"💵 *السعر الحالي:* {current_price:.2f}\n"
+                f"💡 *يُفضل الخروج اليدوي:* {status_text} لتجنب انزلاق السعر."
             )
             send_telegram_alert(rev_msg)
             st.session_state.active_trade["reversal_notified"] = True
 
         elif pips_diff >= (target_dist * 0.5) and not active.get("be_notified", False):
-            st.warning("⚡ الصفقة حققت +50% من الهدف! جاري إرسال تنبيه تأمين الصفقة.")
+            st.warning("⚡ الصفقة حققت منتصف الهدف! جاري إرسال تنبيه التأمين.")
             be_msg = (
-                f"🛡️ *تنبيه تأمين الصفقة (Break-Even)*\n\n"
+                f"🛡️ *تنبيه Break-Even*\n\n"
                 f"📌 *الزوج:* {symbol_display}\n"
-                f"📊 *الصفقة:* {trade_type} من سعر {entry_p:.2f}\n"
+                f"📊 *الصفقة:* {trade_type}\n"
                 f"💵 *السعر الحالي:* {current_price:.2f}\n"
-                f"🛠️ *الإجراء المطلوب:* نقل الستوب فوراً لسعر الدخول ({entry_p:.2f}) وحجز جزء من الأرباح!"
+                f"🛠️ *الإجراء:* انقل الستوب لسعر الدخول ({entry_p:.2f})."
             )
             send_telegram_alert(be_msg)
             st.session_state.active_trade["be_notified"] = True
 
-    with st.expander("📊 سجل بيانات الأسعار والمؤشرات الحية"):
-        cols = [c for c in ["datetime", "open", "high", "low", "close", "atr", "rsi"] if c in df.columns]
+    with st.expander("📊 سجل حركة الأسعار (5Min)"):
+        cols = [c for c in ["datetime", "open", "high", "low", "close", "atr"] if c in df.columns]
         st.dataframe(df[cols].tail(10))
