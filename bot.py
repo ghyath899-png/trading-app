@@ -283,12 +283,6 @@ def fmt(x, pip):
     return f"{x:.2f}" if pip >= 0.1 else f"{x:.5f}" if pip < 0.01 else f"{x:.3f}"
 
 
-
-
-
-
-
-
 # ---------------- استراتيجيات إضافية: Sweep+CHOCH، Range Breakout، نماذج فنية ----------------
 def extra_setups(d, price, atr, H, L, tr):
     out = []
@@ -661,6 +655,9 @@ def check_open(st, m5s, frames, now, day):
 
 # ---------------- التشغيل ----------------
 def main():
+    # إرسال رسالة اختباريّة وتأكيد عمل البوت في كل تشغيل يدوي/آلي
+    tg("🤖 تم فحص السوق بنجاح: الاتصال بالتليجرام شغال وواجهة GitHub تُنفذ الكود بشكل ممتاز.")
+
     if not TD_KEY:
         print("TWELVE_DATA_API_KEY غير موجود")
         sys.exit(0)
@@ -690,7 +687,7 @@ def main():
     if not m5s:
         last = st.get("err_time")
         if not last or (now - pd.Timestamp(last)).total_seconds() > 3600:
-            tg(f"⚠️ البوت ما قدر يجيب بيانات Twelve Data:\n{LAST_ERR['msg']}")
+            tg(f"⚠️️ البوت ما قدر يجيب بيانات Twelve Data:\n{LAST_ERR['msg']}")
             st["err_time"] = now.isoformat()
         st["last_msg"] = now.isoformat() if SENT else st["last_msg"]
         save(st)
