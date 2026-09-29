@@ -1,0 +1,43 @@
+name: trading-bot
+
+on:
+  schedule:
+    - cron: "2,17,32,47 6-21 * * 1-5"
+  workflow_dispatch:
+    inputs:
+      test:
+        description: "اكتب 1 لإرسال رسالة اختبار فقط"
+        default: "0"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: trading-bot
+  cancel-in-progress: false
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: requirements-bot.txt
+      - run: pip install -r requirements-bot.txt
+      - name: Run bot
+        env:
+          TWELVE_DATA_API_KEY: ${{ secrets.TWELVE_DATA_API_KEY }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          TEST_MSG: ${{ github.event.inputs.test }}
+        run: python bot.py
+      - name: Save state
+        run: |
+          git config user.name "bot"
+          git config user.email "bot@users.noreply.github.com"
+          if [ -f state.json ]; then git add state.json; fi
+          git diff --cached --quiet || (git commit -m "state" && git pull --rebase && git push)
