@@ -1,5 +1,5 @@
 """
-بوت متداول مساعد وتتبع صفقات الذهب (XAU/USD) على GitHub Actions
+بوت متداول مساعد وتتبع صفقات الذهب (XAU/USD) - النسخة المتقدمة
 المصدر: Twelve Data | التنبيهات: Telegram | حفظ الحالة: state.json
 الفريمات: M5 و M15 معاً | الحد الأقصى: صفقة واحدة فقط على XAU/USD
 """
@@ -25,9 +25,9 @@ TG_CHAT = env("TELEGRAM_CHAT_ID")
 SYMBOL = "XAU/USD"
 ENTRY_TFS = ["15min", "5min"]
 RR = float(env("RR", "1.5"))
-MAX_PER_DAY = int(env("MAX_PER_DAY", "5"))
+MAX_PER_DAY = int(env("MAX_PER_DAY", "6"))
 MAX_LOSSES = int(env("MAX_LOSSES", "3"))
-COOLDOWN_MIN = int(env("COOLDOWN_MIN", "15"))
+COOLDOWN_MIN = int(env("COOLDOWN_MIN", "5"))
 EXPIRE_HOURS = float(env("EXPIRE_HOURS", "4"))
 PIP = 0.1
 STATE_FILE = "state.json"
@@ -36,6 +36,7 @@ STATE_FILE = "state.json"
 # ---------------- المؤشرات الفنية والسوينغات ----------------
 def prep(df):
     d = df.copy()
+    d["EMA20"] = d["Close"].ewm(span=20, adjust=False).mean()
     d["EMA50"] = d["Close"].ewm(span=50, adjust=False).mean()
     d["EMA200"] = d["Close"].ewm(span=200, adjust=False).mean()
     ch = d["Close"].diff()
@@ -48,7 +49,7 @@ def prep(df):
     return d
 
 
-def swings(d, n=3):
+def swings(d, n=2):
     h, l = d["High"].values, d["Low"].values
     H, L = [], []
     for i in range(n, len(d) - n):
@@ -59,98 +60,73 @@ def swings(d, n=3):
     return H, L
 
 
-# ---------------- النماذج الفنية المعتمدة على Swings ----------------
-def detect_chart_patterns(d):
-    H, L = swings(d, n=3)
-    last = d.iloc[-1]
-    atr = last["ATR"]
-    price = last["Close"]
-    pats = []
-
-    if len(H) < 3 or len(L) < 3:
-        return pats
-
-    # 1. Double / Triple Top & Bottom
-    if len(L) >= 2 and abs(L[-1][1] - L[-2][1]) <= 0.4 * atr:
-        neck = d["High"].iloc[L[-2][0]:L[-1][0]].max()
-        if price > neck:
-            pats.append(("Double Bottom", 1, L[-1][1] - 0.2 * atr, "قاع مزدوج موثوق وتأكيد كسر خط العنق"))
-    if len(H) >= 2 and abs(H[-1][1] - H[-2][1]) <= 0.4 * atr:
-        neck = d["Low"].iloc[H[-2][0]:H[-1][0]].min()
-        if price < neck:
-            pats.append(("Double Top", -1, H[-1][1] + 0.2 * atr, "قمة مزدوجة وتأكيد كسر خط العنق"))
-
-    if len(L) >= 3 and abs(L[-1][1] - L[-2][1]) <= 0.4 * atr and abs(L[-2][1] - L[-3][1]) <= 0.4 * atr:
-        neck = d["High"].iloc[L[-3][0]:L[-1][0]].max()
-        if price > neck:
-            pats.append(("Triple Bottom", 1, min(L[-1][1], L[-2][1]) - 0.2 * atr, "ثلاثي القيعان واختراق المقاومة"))
-    if len(H) >= 3 and abs(H[-1][1] - H[-2][1]) <= 0.4 * atr and abs(H[-2][1] - H[-3][1]) <= 0.4 * atr:
-        neck = d["Low"].iloc[H[-3][0]:H[-1][0]].min()
-        if price < neck:
-            pats.append(("Triple Top", -1, max(H[-1][1], H[-2][1]) + 0.2 * atr, "ثلاثي القمم وكسر الدعم"))
-
-    # 2. Head & Shoulders / Inverse H&S
-    if len(H) >= 3:
-        ls, h, rs = H[-3][1], H[-2][1], H[-1][1]
-        if h > ls and h > rs and abs(ls - rs) <= 0.7 * atr:
-            neck = min(d["Low"].iloc[H[-3][0]:H[-2][0]].min(), d["Low"].iloc[H[-2][0]:H[-1][0]].min())
-            if price < neck:
-                pats.append(("Head & Shoulders", -1, h + 0.2 * atr, "نموذج رأس وكتفين واكتمل كسر خط العنق"))
-    if len(L) >= 3:
-        ls, h, rs = L[-3][1], L[-2][1], L[-1][1]
-        if h < ls and h < rs and abs(ls - rs) <= 0.7 * atr:
-            neck = max(d["High"].iloc[L[-3][0]:L[-2][0]].max(), d["High"].iloc[L[-2][0]:L[-1][0]].max())
-            if price > neck:
-                pats.append(("Inverse H&S", 1, h - 0.2 * atr, "نموذج رأس وكتفين عكسي مع اختراق المقاومة"))
-
-    # 3. Triangles & Flags & Cup/Handle
-    if H[-1][1] < H[-2][1] and L[-1][1] > L[-2][1]:
-        if price > H[-1][1]:
-            pats.append(("Symmetrical Triangle", 1, L[-1][1], "اختراق المثلث المتماثل صعوداً"))
-        elif price < L[-1][1]:
-            pats.append(("Symmetrical Triangle", -1, H[-1][1], "كسر المثلث المتماثل هبوطاً"))
-
-    return pats
-
-
-# ---------------- مسح الاستراتيجيات واقتناص الصفقات ----------------
+# ---------------- مسح الاستراتيجيات المتقدمة واقتناص الفرص ----------------
 def scan(df, tf_name):
     d = prep(df)
     last = d.iloc[-1]
     prev = d.iloc[-2]
+    prev2 = d.iloc[-3]
     price, atr, rsi = float(last["Close"]), float(last["ATR"]), float(last["RSI"])
-    H, L = swings(d, n=3)
+    H, L = swings(d, n=2)
     out = []
 
     def add(name, dr, sl, base, why):
         out.append({"name": f"{name} ({tf_name})", "dir": dr, "sl": float(sl), "score": base, "why": why})
 
-    # A. Liquidity Sweep + CHOCH
-    if len(H) >= 2 and len(L) >= 2:
-        if d["High"].iloc[-3:].max() > H[-1][1] and price < L[-1][1]:
-            add("Liquidity Sweep + CHOCH", -1, d["High"].iloc[-3:].max() + 0.3 * atr, 4,
-                f"سحب سيولة أعلى {H[-1][1]:.2f} وتأكيد كسر الهيكل (CHOCH)")
-        if d["Low"].iloc[-3:].min() < L[-1][1] and price > H[-1][1]:
-            add("Liquidity Sweep + CHOCH", 1, d["Low"].iloc[-3:].min() - 0.3 * atr, 4,
-                f"سحب سيولة أسفل {L[-1][1]:.2f} وتأكيد كسر الهيكل (CHOCH)")
+    # 1. Fair Value Gap (FVG) - فجوة السعر غير المكتملة
+    if len(d) >= 4:
+        # FVG صاعد
+        if d["Low"].iloc[-1] > d["High"].iloc[-3] and d["Close"].iloc[-2] > d["Open"].iloc[-2]:
+            gap_low = d["High"].iloc[-3]
+            if price >= gap_low:
+                add("Bullish FVG Retest", 1, gap_low - 0.3 * atr, 2,
+                    f"اختبار فجوة سعرية صاعدة (FVG) عند {gap_low:.2f} مع اتجاه صاعد")
+        # FVG هابط
+        if d["High"].iloc[-1] < d["Low"].iloc[-3] and d["Close"].iloc[-2] < d["Open"].iloc[-2]:
+            gap_high = d["Low"].iloc[-3]
+            if price <= gap_high:
+                add("Bearish FVG Retest", -1, gap_high + 0.3 * atr, 2,
+                    f"اختبار فجوة سعرية هابطة (FVG) عند {gap_high:.2f} مع اتجاه هابط")
 
-    # B. Range Breakout
-    sub = d.iloc[-25:-1]
-    r_high, r_low = sub["High"].max(), sub["Low"].min()
-    if (r_high - r_low) <= 2.2 * atr:
-        if price > r_high and prev["Close"] <= r_high:
-            add("Range Breakout", 1, r_low - 0.2 * atr, 3, f"انفجار وحجم صاعد وتجاوز نطاق التجميع [{r_low:.2f} - {r_high:.2f}]")
-        elif price < r_low and prev["Close"] >= r_low:
-            add("Range Breakout", -1, r_high + 0.2 * atr, 3, f"انفجار وحجم هابط وكسر نطاق التجميع [{r_low:.2f} - {r_high:.2f}]")
+    # 2. Breakout High/Low (كسر أعلى/أقل سعر لأخر 24 شمعة)
+    recent_max = d["High"].iloc[-25:-1].max()
+    recent_min = d["Low"].iloc[-25:-1].min()
 
-    # C. النماذج الفنية
-    for p_name, p_dir, p_sl, p_why in detect_chart_patterns(d):
-        add(p_name, p_dir, p_sl, 3, p_why)
+    if price > recent_max and prev["Close"] <= recent_max:
+        add("Momentum High Breakout", 1, recent_max - 0.4 * atr, 2,
+            f"اختراق زخم لأعلى قمة سابقة عند {recent_max:.2f}")
+    elif price < recent_min and prev["Close"] >= recent_min:
+        add("Momentum Low Breakout", -1, recent_min + 0.4 * atr, 2,
+            f"كسر زخم لأدنى قاع سابق عند {recent_min:.2f}")
 
+    # 3. EMA20/50 Pullback + Rejection Candle
+    body = abs(last["Close"] - last["Open"])
+    wick_dn = min(last["Close"], last["Open"]) - last["Low"]
+    wick_up = last["High"] - max(last["Close"], last["Open"])
+
+    if price > last["EMA50"] and last["Low"] <= last["EMA20"] + 0.2 * atr:
+        if wick_dn > 1.2 * body or (last["Close"] > last["Open"] and price > prev["High"]):
+            add("EMA Dynamic Bounce", 1, last["Low"] - 0.2 * atr, 2,
+                "ارتداد صاعد مع شمعة رفض من المتوسط الديناميكي (EMA)")
+
+    if price < last["EMA50"] and last["High"] >= last["EMA20"] - 0.2 * atr:
+        if wick_up > 1.2 * body or (last["Close"] < last["Open"] and price < prev["Low"]):
+            add("EMA Dynamic Bounce", -1, last["High"] + 0.2 * atr, 2,
+                "ارتداد هابط مع شمعة رفض من المتوسط الديناميكي (EMA)")
+
+    # 4. Liquidity Sweep
+    if len(H) >= 1 and len(L) >= 1:
+        if d["High"].iloc[-3:].max() > H[-1][1] and price < prev["High"]:
+            add("Liquidity Sweep", -1, d["High"].iloc[-3:].max() + 0.2 * atr, 2,
+                f"سحب سيولة أعلى {H[-1][1]:.2f} وانعكاس هابط")
+        if d["Low"].iloc[-3:].min() < L[-1][1] and price > prev["Low"]:
+            add("Liquidity Sweep", 1, d["Low"].iloc[-3:].min() - 0.2 * atr, 2,
+                f"سحب سيولة أسفل {L[-1][1]:.2f} وانعكاس صاعد")
+
+    # تقييم الشروط مع الـ RSI
     for s in out:
         dr = s["dir"]
-        s["score"] += 1 if (dr == 1 and rsi < 60) or (dr == -1 and rsi > 40) else 0
-        s["score"] += 1 if (dr == 1 and price > last["EMA50"]) or (dr == -1 and price < last["EMA50"]) else 0
+        s["score"] += 1 if (dr == 1 and rsi < 70) or (dr == -1 and rsi > 30) else 0
 
     return out, atr
 
@@ -160,9 +136,9 @@ def build(s, price, atr):
     if (dr == 1 and sl >= price) or (dr == -1 and sl <= price):
         return None, "مستوى الستوب غير صحيح"
     risk = abs(price - sl)
-    if risk < 0.5 * atr:
-        sl, risk = price - dr * 0.5 * atr, 0.5 * atr
-    if risk > 4.0 * atr:
+    if risk < 0.25 * atr:
+        sl, risk = price - dr * 0.25 * atr, 0.25 * atr
+    if risk > 4.5 * atr:
         return None, "الستوب بعيد جداً"
     tp1_p = (RR * risk) / PIP
     return {"entry": price, "sl": sl, "tp1": price + dr * RR * risk, "tp2": price + dr * RR * 1.8 * risk,
@@ -217,7 +193,7 @@ def tg(text):
         print("فشل إرسال تيليجرام:", e)
 
 
-# ---------------- مراقبة الصفقات ونظام EARLY EXIT المتعدد الأدلة ----------------
+# ---------------- مراقبة الصفقات ونظام EARLY EXIT ----------------
 def check_trade_management(st, m5_df, now, day):
     still = []
     for t in st["open"]:
@@ -238,45 +214,37 @@ def check_trade_management(st, m5_df, now, day):
                 res = "TP1"
                 break
 
-        # 2. فحص نظام الخروج المبكر (EARLY EXIT) القائم على مجموعة أدلة مجتمعة
+        # 2. فحص الخروج المبكر (EARLY EXIT)
         early_reasons = []
-        if res is None and len(m5_df) >= 40:
+        if res is None and len(m5_df) >= 30:
             d = prep(m5_df)
             c1, c2 = d.iloc[-1], d.iloc[-2]
             H, L = swings(d, n=2)
 
-            if t["dir"] == 1: # صفقة شراء قائمة
-                # دلايل أ: Break of Structure (CHOCH هابط)
+            if t["dir"] == 1:
                 if len(L) >= 2 and c1["Close"] < L[-1][1] and L[-1][0] > (len(d) - len(since) - 5):
                     early_reasons.append(f"كسر هيكل السوق (BOS/CHOCH) هبوطاً أسفل {L[-1][1]:.2f}")
-                # دليل ب: ضعف الزخم وكسر EMA50
                 if c1["Close"] < c1["EMA50"] and c1["RSI"] < 45:
                     early_reasons.append("ضعف الزخم وهبوط السعر أسفل EMA50")
-                # دليل ج: شمعة انعكاسية ابتلاعية حادة
                 if c1["Close"] < c1["Open"] and (c2["Open"] - c2["Close"]) > 0 and \
-                   (c1["Open"] - c1["Close"]) > 1.8 * abs(c2["Close"] - c2["Open"]):
+                   (c1["Open"] - c1["Close"]) > 1.5 * abs(c2["Close"] - c2["Open"]):
                     early_reasons.append("ظهور شمعة ابتلاعية هابطة حادة")
 
-            elif t["dir"] == -1: # صفقة بيع قائمة
-                # دلايل أ: Break of Structure (CHOCH صاعد)
+            elif t["dir"] == -1:
                 if len(H) >= 2 and c1["Close"] > H[-1][1] and H[-1][0] > (len(d) - len(since) - 5):
                     early_reasons.append(f"كسر هيكل السوق (BOS/CHOCH) صعوداً أعلى {H[-1][1]:.2f}")
-                # دليل ب: ضعف الزخم واختراق EMA50
                 if c1["Close"] > c1["EMA50"] and c1["RSI"] > 55:
                     early_reasons.append("ضعف الزخم وصعود السعر أعلى EMA50")
-                # دليل ج: شمعة انعكاسية ابتلاعية حادة
                 if c1["Close"] > c1["Open"] and (c2["Close"] - c2["Open"]) < 0 and \
-                   (c1["Close"] - c1["Open"]) > 1.8 * abs(c2["Open"] - c2["Close"]):
+                   (c1["Close"] - c1["Open"]) > 1.5 * abs(c2["Open"] - c2["Close"]):
                     early_reasons.append("ظهور شمعة ابتلاعية صاعدة حادة")
 
-            # اشترط وجود دليلين أو أكثر لتحقيق الخروج المبكر
             if len(early_reasons) >= 2:
                 res = "EARLY_EXIT"
 
         if res is None and (now - pd.Timestamp(t["time"])).total_seconds() > EXPIRE_HOURS * 3600:
             res = "EXPIRED"
 
-        # حساب الأرباح الحالية للتقرير
         pnl_pts = (curr_price - t["entry"]) if t["dir"] == 1 else (t["entry"] - curr_price)
         pnl_str = f"{pnl_pts:+.2f} $"
         side_type = "BUY" if t["dir"] == 1 else "SELL"
@@ -293,7 +261,6 @@ def check_trade_management(st, m5_df, now, day):
             day["losses"] += 1
             day["r"] -= 0.3
             reasons_txt = "\n• " + "\n• ".join(early_reasons)
-            # الرسالة بنفس التنسيق المطلوب في الصورة
             tg(f"⚠️ EARLY EXIT – {side_type}\n\n"
                f"السبب: اجتماع أدلة انعكاس مؤكدة:{reasons_txt}\n\n"
                f"الدخول: {t['entry']:.2f}\n"
@@ -329,10 +296,8 @@ def main():
         save_state(st)
         return
 
-    # 1. متابعة الصفقة المفتوحة
     check_trade_management(st, m5_df, now, day)
 
-    # 2. البحث عن صفقة جديدة بشرط عدم وجود أي صفقة قائمة
     if len(st["open"]) == 0 and day["losses"] < MAX_LOSSES and day["sent"] < MAX_PER_DAY:
         last_time = st["last"].get(SYMBOL)
         can_scan = not last_time or (now - pd.Timestamp(last_time)).total_seconds() >= COOLDOWN_MIN * 60
@@ -342,7 +307,7 @@ def main():
 
             for tf in ENTRY_TFS:
                 tf_df = resample_tf(m5_df, tf).iloc[:-1]
-                if len(tf_df) < 50:
+                if len(tf_df) < 25:
                     continue
                 setups, atr = scan(tf_df, tf)
                 live_price = float(m5_df["Close"].iloc[-1])
@@ -355,7 +320,6 @@ def main():
                             s.update(sym=SYMBOL, ctx_time=m5_df.index[-1].isoformat())
                             best_signal = s
 
-            # إرسال أית إشارة
             if best_signal:
                 side = "BUY" if best_signal["dir"] == 1 else "SELL"
                 tg(f"⚡ إشارة جديدة: {side} 🟢\n" if best_signal["dir"] == 1 else f"⚡ إشارة جديدة: {side} 🔴\n"
@@ -375,7 +339,6 @@ def main():
                 st["last"][SYMBOL] = now.isoformat()
                 day["sent"] += 1
 
-    # ملخص اليوم
     if now.hour >= 21 and not day["summary"]:
         tg(f"📊 ملخص أداء اليوم {today} (UTC)\nإشارات: {day['sent']} | رابحة: {day['wins']} | "
            f"خاسرة: {day['losses']} | الصافي: {day['r']:+.1f}R")
