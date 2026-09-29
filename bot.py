@@ -16,13 +16,15 @@ def env(name, default=""):
 TD_KEY = env("TWELVE_DATA_API_KEY")
 TG_TOKEN = env("TELEGRAM_BOT_TOKEN")
 TG_CHAT = env("TELEGRAM_CHAT_ID")
-SYMBOLS = [s.strip() for s in env("SYMBOLS", "XAU/USD,GBP/JPY,EUR/USD,BTC/USD").split(",") if s.strip()]
+# التعديل 1: حصر الأزواج في الذهـب فقط
+SYMBOLS = ["XAU/USD"]
 ENTRY_TF = env("ENTRY_TF", "15min")            # 5min | 15min | 1h
 MIN_SCORE = float(env("MIN_SCORE", "4"))       # أقل نقاط تأكيد (2 نشط، 4 متوازن، 6 صارم)
 RR = float(env("RR", "1.5"))                   # نسبة الهدف الأول للمخاطرة
 MAX_PER_DAY = int(env("MAX_PER_DAY", "5"))     # أقصى عدد إشارات باليوم
 MAX_LOSSES = int(env("MAX_LOSSES", "3"))       # بعد هالعدد من الخسائر بيوقف لباقي اليوم
 COOLDOWN_MIN = int(env("COOLDOWN_MIN", "60"))  # أقل فاصل بين إشارتين لنفس الأداة
+EXPIRE_HOURS = float(env("EXPIRE_HOURS", "4"))  # إذا ما في نتيجة بعد هالمدة بتنسكّر الصفقة وبيرجع يفحص
 PIPS = {"XAU/USD": 0.1, "GBP/JPY": 0.01, "USD/JPY": 0.01, "EUR/USD": 0.0001,
         "GBP/USD": 0.0001, "BTC/USD": 1.0, "NDX": 1.0}
 STATE_FILE = "state.json"
@@ -250,8 +252,6 @@ def fmt(x, pip):
     return f"{x:.2f}" if pip >= 0.1 else f"{x:.5f}" if pip < 0.01 else f"{x:.3f}"
 
 
-
-
 # ---------------- البيانات ----------------
 def fetch(symbol):
     r = requests.get("https://api.twelvedata.com/time_series", timeout=30, params={
@@ -311,6 +311,16 @@ def check_open(st, m5s, now, day):
             continue
         since = df[df.index > pd.Timestamp(t["time"])]
         res = None
+        
+        # التعديل 2: إغلاق مبكر وحماية إذا انكسر الاتجاه أثناء الصفقة (شمعة إغلاق عكسية فوق/تحت EMA50)
+        d_prep = prep(df)
+        last_c = d_prep.iloc[-1]
+        early_exit = False
+        if t["dir"] == 1 and last_c["Close"] < last_c["EMA50"]:
+            early_exit = True
+        elif t["dir"] == -1 and last_c["Close"] > last_c["EMA50"]:
+            early_exit = True
+
         for _, c in since.iterrows():
             if t["dir"] == 1:
                 sl_hit, tp_hit = c["Low"] <= t["sl"], c["High"] >= t["tp1"]
@@ -322,7 +332,11 @@ def check_open(st, m5s, now, day):
             if tp_hit:
                 res = "TP1"
                 break
-        if res is None and (now - pd.Timestamp(t["time"])).total_seconds() > 24 * 3600:
+                
+        if res is None and early_exit:
+            res = "EARLY_EXIT"
+
+        if res is None and (now - pd.Timestamp(t["time"])).total_seconds() > EXPIRE_HOURS * 3600:
             res = "EXPIRED"
         if res is None:
             still.append(t)
@@ -336,8 +350,12 @@ def check_open(st, m5s, now, day):
             day["losses"] += 1
             day["r"] -= 1
             tg(f"❌ ضرب الستوب\n{t['sym']} ({side}) - {t['name']}\nالستوب {t['sl']:.5g}")
+        elif res == "EARLY_EXIT":
+            day["losses"] += 1
+            day["r"] -= 0.5
+            tg(f"⚠️ إغلاق مبكر لحماية الحساب!\n{t['sym']} ({side}) - {t['name']}\nتم رصد انعكاس في الاتجاه والكسر عكس الصفقة (تجاوز EMA50). يفضل الخروج فوراً لتفادي ضرب الستوب الكامل.")
         else:
-            tg(f"⌛ انتهت الصفقة بدون نتيجة بعد 24 ساعة\n{t['sym']} ({side}) - {t['name']}")
+            tg(f"⌛ انتهت الصفقة بدون نتيجة بعد {EXPIRE_HOURS:g} ساعات\n{t['sym']} ({side}) - {t['name']}\nالبوت رح يرجع يفحص هالأداة من جديد.")
     st["open"] = still
 
 
