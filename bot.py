@@ -1,2736 +1,3060 @@
-"""XAU/USD GitHub Actions Bot
-M5 + M15 | Telegram | Quality Grades | One Open Trade | Early Exit
-"""
-
 import os
 import sys
 import json
-import time
 from datetime import datetime, timezone
 
 import pandas as pd
+import numpy as np
 import requests
 
 
-# =========================================================
+# ============================================================
+# XAU/USD SIGNAL BOT
+# M5 + M15
+# Telegram Alerts
+# Liquidity Sweep + CHOCH
+# Range Breakout
+# S/R Rejection
+# Double / Triple Tops & Bottoms
+# Head & Shoulders
+# Triangles
+# Flags / Pennants
+# Wedges
+# Rectangle Breakout
+# Early Exit
+# ONE OPEN XAU/USD TRADE ONLY
+# NO H1/H4 DIRECTION FILTER
+# ============================================================
+
+
+STATE_FILE = "state.json"
+SYMBOL = "XAU/USD"
+
+# XAU price unit used internally
+PIP = 0.1
+
+
+# ============================================================
 # SETTINGS
-# =========================================================
+# ============================================================
 
 def env(name, default=""):
-    v = os.environ.get(name)
-    return v if v not in (None, "") else default
+    value = os.environ.get(name)
+    return default if value is None or value == "" else value
+
+
+def env_int(name, default):
+    try:
+        return int(env(name, str(default)))
+    except Exception:
+        return default
+
+
+def env_float(name, default):
+    try:
+        return float(env(name, str(default)))
+    except Exception:
+        return default
 
 
 TD_KEY = env("TWELVE_DATA_API_KEY")
 TG_TOKEN = env("TELEGRAM_BOT_TOKEN")
 TG_CHAT = env("TELEGRAM_CHAT_ID")
 
-SYMBOLS = [
-    s.strip()
-    for s in env("SYMBOLS", "XAU/USD").split(",")
-    if s.strip()
-]
+# أقل تقييم مسموح له بإرسال إشارة
+MIN_SCORE = env_int("MIN_SCORE", 5)
 
-# الحد الأدنى العام للإشارة
-MIN_SCORE = float(env("MIN_SCORE", "6"))
+# الحد الأقصى للصفقات اليومية
+MAX_PER_DAY = env_int("MAX_PER_DAY", 5)
 
-# الهدف الأساسي
-RR = float(env("RR", "1.5"))
+# بعد هذا العدد من الخسائر لا توجد إشارات جديدة
+MAX_LOSSES = env_int("MAX_LOSSES", 3)
 
-# أقصى عدد صفقات فعلية باليوم
-MAX_PER_DAY = int(env("MAX_PER_DAY", "5"))
+# أقصى مدة للصفقة قبل اعتبارها منتهية
+EXPIRE_HOURS = env_float("EXPIRE_HOURS", 4)
 
-# إذا وصل عدد الخسائر لهذا الرقم، يتوقف عن فتح صفقات جديدة
-MAX_LOSSES = int(env("MAX_LOSSES", "3"))
+# اختبار Telegram
+TEST_MSG = env("TEST_MSG", "0") == "1"
 
-# لا يوجد كولداون إجباري
-COOLDOWN_MIN = int(env("COOLDOWN_MIN", "0"))
+# رسالة تشغيل مرة واحدة يومياً
+STARTUP_MSG = env("STARTUP_MSG", "1") == "1"
 
-# انتهاء الصفقة إذا بقيت بدون TP/SL
-EXPIRE_HOURS = float(env("EXPIRE_HOURS", "4"))
-
-# رسالة حالة البوت
-HEARTBEAT_HOURS = float(env("HEARTBEAT_HOURS", "1"))
-
-# ستوب Sweep
-SWEEP_SL_POINTS = float(env("SWEEP_SL_POINTS", "10"))
-
-# درجات الجودة
-EXCELLENT_SCORE = float(env("EXCELLENT_SCORE", "9"))
-GOOD_SCORE = float(env("GOOD_SCORE", "7"))
-
-# الحد الأدنى لقوة الانعكاس للخروج المبكر
-EARLY_EXIT_SCORE = int(env("EARLY_EXIT_SCORE", "4"))
-
-PIPS = {
-    "XAU/USD": 0.1,
-    "GBP/JPY": 0.01,
-    "USD/JPY": 0.01,
-    "EUR/USD": 0.0001,
-    "GBP/USD": 0.0001,
-    "BTC/USD": 1.0,
-    "NDX": 1.0,
-}
-
-STATE_FILE = "state.json"
-
-SENT = []
-
-LAST_ERR = {
-    "msg": ""
-}
+# هامش ستوب Sweep بعد الذيل
+SWEEP_SL_PRICE = env_float("SWEEP_SL_PRICE", 1.0)
 
 
-# =========================================================
-# INDICATORS
-# =========================================================
+# ============================================================
+# TELEGRAM
+# ============================================================
 
-def prep(df):
-    d = df.copy()
+def telegram_call(method, payload=None):
 
-    d["EMA50"] = d["Close"].ewm(
-        span=50,
-        adjust=False
-    ).mean()
-
-    d["EMA200"] = d["Close"].ewm(
-        span=200,
-        adjust=False
-    ).mean()
-
-    ch = d["Close"].diff()
-
-    up = ch.clip(
-        lower=0
-    ).ewm(
-        alpha=1 / 14,
-        adjust=False
-    ).mean()
-
-    dn = (-ch.clip(
-        upper=0
-    )).ewm(
-        alpha=1 / 14,
-        adjust=False
-    ).mean()
-
-    dn = dn.replace(0, 1e-9)
-
-    d["RSI"] = 100 - 100 / (1 + up / dn)
-
-    tr = pd.concat(
-        [
-            d["High"] - d["Low"],
-            (d["High"] - d["Close"].shift()).abs(),
-            (d["Low"] - d["Close"].shift()).abs()
-        ],
-        axis=1
-    ).max(axis=1)
-
-    d["ATR"] = tr.ewm(
-        alpha=1 / 14,
-        adjust=False
-    ).mean()
-
-    return d
-
-
-def swings(d, n=3):
-    h = d["High"].values
-    l = d["Low"].values
-
-    H = []
-    L = []
-
-    for i in range(n, len(d) - n):
-
-        if h[i] == h[i - n:i + n + 1].max():
-            H.append(
-                (
-                    i,
-                    float(h[i])
-                )
-            )
-
-        if l[i] == l[i - n:i + n + 1].min():
-            L.append(
-                (
-                    i,
-                    float(l[i])
-                )
-            )
-
-    return H, L
-
-
-def candle_info(d):
-
-    if len(d) < 3:
-        return False, False, 0.0, 1e-9
-
-    c = d.iloc[-1]
-    p = d.iloc[-2]
-
-    body = abs(
-        c["Close"] - c["Open"]
-    )
-
-    rng = max(
-        c["High"] - c["Low"],
-        1e-9
-    )
-
-    upper_wick = (
-        c["High"]
-        - max(c["Close"], c["Open"])
-    )
-
-    lower_wick = (
-        min(c["Close"], c["Open"])
-        - c["Low"]
-    )
-
-    bull = (
-        (
-            c["Close"] > c["Open"]
-            and (
-                body >= 0.55 * rng
-                or lower_wick >= 2 * body
-            )
-        )
-        or
-        (
-            c["Close"] > c["Open"]
-            and p["Close"] < p["Open"]
-            and c["Close"] >= p["Open"]
-        )
-    )
-
-    bear = (
-        (
-            c["Close"] < c["Open"]
-            and (
-                body >= 0.55 * rng
-                or upper_wick >= 2 * body
-            )
-        )
-        or
-        (
-            c["Close"] < c["Open"]
-            and p["Close"] > p["Open"]
-            and c["Close"] <= p["Open"]
-        )
-    )
-
-    return (
-        bool(bull),
-        bool(bear),
-        body,
-        rng
-    )
-
-
-# =========================================================
-# PREVIOUS HOUR
-# =========================================================
-
-def previous_hour_range(df):
-
-    if len(df) < 20:
+    if not TG_TOKEN:
+        print("TELEGRAM ERROR: TELEGRAM_BOT_TOKEN is missing")
         return None
 
-    last_time = df.index[-1]
+    url = f"https://api.telegram.org/bot{TG_TOKEN}/{method}"
 
-    hour_end = last_time.floor("h")
-    hour_start = hour_end - pd.Timedelta(hours=1)
-
-    x = df[
-        (df.index >= hour_start)
-        & (df.index < hour_end)
-    ]
-
-    if len(x) < 4:
-        return None
-
-    return (
-        float(x["High"].max()),
-        float(x["Low"].min())
-    )
-
-
-# =========================================================
-# CHOCH AFTER SWEEP
-# =========================================================
-
-def minor_choch_after_sweep(
-    d,
-    sweep_index,
-    direction
-):
-    """
-    direction:
-    -1 = بعد Sweep قمة نبحث عن CHOCH هابط
-    +1 = بعد Sweep قاع نبحث عن CHOCH صاعد
-    """
-
-    if sweep_index < 6:
-        return None
-
-    if sweep_index >= len(d) - 1:
-        return None
-
-    start = max(
-        0,
-        sweep_index - 8
-    )
-
-    before = d.iloc[
-        start:sweep_index
-    ]
-
-    if len(before) < 4:
-        return None
-
-    H, L = swings(
-        before,
-        2
-    )
-
-    if direction == -1:
-
-        if not L:
-            return None
-
-        level = float(L[-1][1])
-
-        for k in range(
-            sweep_index + 1,
-            len(d)
-        ):
-
-            if float(
-                d["Close"].iloc[k]
-            ) < level:
-
-                return (
-                    k,
-                    level
-                )
-
-    else:
-
-        if not H:
-            return None
-
-        level = float(H[-1][1])
-
-        for k in range(
-            sweep_index + 1,
-            len(d)
-        ):
-
-            if float(
-                d["Close"].iloc[k]
-            ) > level:
-
-                return (
-                    k,
-                    level
-                )
-
-    return None
-
-
-# =========================================================
-# LIQUIDITY SWEEP + CHOCH
-# =========================================================
-
-def liquidity_sweep(
-    d,
-    pip
-):
-
-    if len(d) < 40:
-        return []
-
-    result = []
-
-    previous = previous_hour_range(d)
-
-    if not previous:
-        return result
-
-    previous_high, previous_low = previous
-
-    start = max(
-        10,
-        len(d) - 12
-    )
-
-    for i in range(
-        start,
-        len(d)
-    ):
-
-        c = d.iloc[i]
-
-        rng = max(
-            float(c["High"] - c["Low"]),
-            1e-9
+    try:
+        response = requests.post(
+            url,
+            json=payload or {},
+            timeout=15
         )
 
-        # -----------------------------
-        # SELL: sweep previous hour high
-        # -----------------------------
-
-        upper_wick = (
-            c["High"]
-            - max(
-                c["Open"],
-                c["Close"]
-            )
-        )
-
-        if (
-            c["High"] > previous_high
-            and c["Close"] < previous_high
-            and upper_wick >= 0.30 * rng
-        ):
-
-            choch = minor_choch_after_sweep(
-                d,
-                i,
-                -1
-            )
-
-            if (
-                choch
-                and choch[0] == len(d) - 1
-            ):
-
-                sl = (
-                    float(c["High"])
-                    + SWEEP_SL_POINTS * pip
-                )
-
-                tp = float(
-                    d["Low"].iloc[
-                        max(0, i):
-                    ].min()
-                )
-
-                if tp >= float(c["Close"]):
-
-                    tp = float(
-                        d["Low"].iloc[-10:].min()
-                    )
-
-                result.append(
-                    {
-                        "name":
-                            "Liquidity Sweep + CHOCH",
-
-                        "dir":
-                            -1,
-
-                        "sl":
-                            sl,
-
-                        "tp_raw":
-                            tp,
-
-                        "base":
-                            6,
-
-                        "why":
-                            (
-                                "سحب سيولة فوق قمة "
-                                "الساعة السابقة ثم "
-                                f"CHOCH هابط تحت {choch[1]:.2f}"
-                            )
-                    }
-                )
-
-                break
-
-        # -----------------------------
-        # BUY: sweep previous hour low
-        # -----------------------------
-
-        lower_wick = (
-            min(
-                c["Open"],
-                c["Close"]
-            )
-            - c["Low"]
-        )
-
-        if (
-            c["Low"] < previous_low
-            and c["Close"] > previous_low
-            and lower_wick >= 0.30 * rng
-        ):
-
-            choch = minor_choch_after_sweep(
-                d,
-                i,
-                1
-            )
-
-            if (
-                choch
-                and choch[0] == len(d) - 1
-            ):
-
-                sl = (
-                    float(c["Low"])
-                    - SWEEP_SL_POINTS * pip
-                )
-
-                tp = float(
-                    d["High"].iloc[
-                        max(0, i):
-                    ].max()
-                )
-
-                if tp <= float(c["Close"]):
-
-                    tp = float(
-                        d["High"].iloc[-10:].max()
-                    )
-
-                result.append(
-                    {
-                        "name":
-                            "Liquidity Sweep + CHOCH",
-
-                        "dir":
-                            1,
-
-                        "sl":
-                            sl,
-
-                        "tp_raw":
-                            tp,
-
-                        "base":
-                            6,
-
-                        "why":
-                            (
-                                "سحب سيولة تحت قاع "
-                                "الساعة السابقة ثم "
-                                f"CHOCH صاعد فوق {choch[1]:.2f}"
-                            )
-                    }
-                )
-
-                break
-
-    return result
-
-
-# =========================================================
-# RANGE BREAKOUT
-# =========================================================
-
-def range_breakout(d):
-
-    if len(d) < 40:
-        return []
-
-    tf = d.attrs.get(
-        "tf",
-        "5min"
-    )
-
-    # ساعة كاملة على الأقل
-    W = 12 if tf == "5min" else 4
-
-    if len(d) <= W + 2:
-        return []
-
-    range_df = d.iloc[
-        -(W + 1):-1
-    ]
-
-    rh = float(
-        range_df["High"].max()
-    )
-
-    rl = float(
-        range_df["Low"].min()
-    )
-
-    size = rh - rl
-
-    atr = float(
-        d["ATR"].iloc[-1]
-    )
-
-    if size <= 0:
-        return []
-
-    if size > 4.0 * atr:
-        return []
-
-    tolerance = 0.12 * atr
-
-    touches_high = (
-        range_df["High"]
-        >= rh - tolerance
-    ).sum()
-
-    touches_low = (
-        range_df["Low"]
-        <= rl + tolerance
-    ).sum()
-
-    c = d.iloc[-1]
-
-    body = abs(
-        c["Close"] - c["Open"]
-    )
-
-    rng = max(
-        c["High"] - c["Low"],
-        1e-9
-    )
-
-    result = []
-
-    midpoint = (
-        rh + rl
-    ) / 2
-
-    # BUY
-    if (
-        touches_high >= 2
-        and c["Close"] > rh
-        and c["Open"] > rh
-        and body >= 0.55 * rng
-    ):
-
-        risk = abs(
-            float(c["Close"])
-            - midpoint
-        )
-
-        result.append(
-            {
-                "name":
-                    "Range Breakout",
-
-                "dir":
-                    1,
-
-                "sl":
-                    midpoint,
-
-                "tp_raw":
-                    float(c["Close"])
-                    + 2 * risk,
-
-                "base":
-                    5,
-
-                "why":
-                    (
-                        f"إغلاق كامل فوق رينج "
-                        f"ساعة [{rl:.2f}-{rh:.2f}]"
-                    )
+        try:
+            data = response.json()
+        except Exception:
+            data = {
+                "ok": False,
+                "description": response.text[:300]
             }
-        )
 
-    # SELL
-    if (
-        touches_low >= 2
-        and c["Close"] < rl
-        and c["Open"] < rl
-        and body >= 0.55 * rng
-    ):
-
-        risk = abs(
-            float(c["Close"])
-            - midpoint
-        )
-
-        result.append(
-            {
-                "name":
-                    "Range Breakout",
-
-                "dir":
-                    -1,
-
-                "sl":
-                    midpoint,
-
-                "tp_raw":
-                    float(c["Close"])
-                    - 2 * risk,
-
-                "base":
-                    5,
-
-                "why":
-                    (
-                        f"إغلاق كامل تحت رينج "
-                        f"ساعة [{rl:.2f}-{rh:.2f}]"
-                    )
-            }
-        )
-
-    return result
-
-
-# =========================================================
-# PATTERNS
-# =========================================================
-
-def pattern_setups(d):
-
-    result = []
-
-    if len(d) < 40:
-        return result
-
-    atr = float(
-        d["ATR"].iloc[-1]
-    )
-
-    close = float(
-        d["Close"].iloc[-1]
-    )
-
-    previous_close = float(
-        d["Close"].iloc[-2]
-    )
-
-    H, L = swings(
-        d,
-        2
-    )
-
-    def add(
-        name,
-        direction,
-        sl,
-        why,
-        base=4
-    ):
-
-        result.append(
-            {
-                "name": name,
-                "dir": direction,
-                "sl": float(sl),
-                "tp_raw": None,
-                "base": base,
-                "why": why
-            }
-        )
-
-    # =====================================================
-    # DOUBLE TOP
-    # =====================================================
-
-    if len(H) >= 2:
-
-        i1, p1 = H[-2]
-        i2, p2 = H[-1]
-
-        if (
-            i2 - i1 >= 6
-            and abs(p1 - p2) <= 0.35 * atr
-            and len(d) - 1 - i2 <= 25
-        ):
-
-            neckline = float(
-                d["Low"].iloc[
-                    i1:i2 + 1
-                ].min()
+        if not response.ok or not data.get("ok"):
+            print(
+                f"TELEGRAM {method} FAILED "
+                f"[{response.status_code}]: {data}"
             )
+            return data
 
-            if (
-                close < neckline
-                and previous_close >= neckline
-            ):
+        return data
 
-                add(
-                    "Double Top",
-                    -1,
-                    max(p1, p2) + 0.25 * atr,
-                    f"Double Top + كسر العنق {neckline:.2f}",
-                    5
-                )
-
-    # =====================================================
-    # DOUBLE BOTTOM
-    # =====================================================
-
-    if len(L) >= 2:
-
-        i1, p1 = L[-2]
-        i2, p2 = L[-1]
-
-        if (
-            i2 - i1 >= 6
-            and abs(p1 - p2) <= 0.35 * atr
-            and len(d) - 1 - i2 <= 25
-        ):
-
-            neckline = float(
-                d["High"].iloc[
-                    i1:i2 + 1
-                ].max()
-            )
-
-            if (
-                close > neckline
-                and previous_close <= neckline
-            ):
-
-                add(
-                    "Double Bottom",
-                    1,
-                    min(p1, p2) - 0.25 * atr,
-                    f"Double Bottom + كسر العنق {neckline:.2f}",
-                    5
-                )
-
-    # =====================================================
-    # HEAD & SHOULDERS
-    # =====================================================
-
-    if len(H) >= 3:
-
-        (i1, p1), \
-        (i2, p2), \
-        (i3, p3) = H[-3:]
-
-        if (
-            p2 > max(p1, p3) + 0.45 * atr
-            and abs(p1 - p3) <= 0.8 * atr
-            and i3 - i1 <= 80
-        ):
-
-            neck1 = float(
-                d["Low"].iloc[
-                    i1:i2 + 1
-                ].min()
-            )
-
-            neck2 = float(
-                d["Low"].iloc[
-                    i2:i3 + 1
-                ].min()
-            )
-
-            neckline = (
-                neck1 + neck2
-            ) / 2
-
-            if (
-                close < neckline
-                and previous_close >= neckline
-            ):
-
-                add(
-                    "Head & Shoulders",
-                    -1,
-                    max(p1, p3) + 0.25 * atr,
-                    f"رأس وكتفين + كسر العنق {neckline:.2f}",
-                    5
-                )
-
-    # =====================================================
-    # INVERSE H&S
-    # =====================================================
-
-    if len(L) >= 3:
-
-        (i1, p1), \
-        (i2, p2), \
-        (i3, p3) = L[-3:]
-
-        if (
-            p2 < min(p1, p3) - 0.45 * atr
-            and abs(p1 - p3) <= 0.8 * atr
-            and i3 - i1 <= 80
-        ):
-
-            neck1 = float(
-                d["High"].iloc[
-                    i1:i2 + 1
-                ].max()
-            )
-
-            neck2 = float(
-                d["High"].iloc[
-                    i2:i3 + 1
-                ].max()
-            )
-
-            neckline = (
-                neck1 + neck2
-            ) / 2
-
-            if (
-                close > neckline
-                and previous_close <= neckline
-            ):
-
-                add(
-                    "Inverse Head & Shoulders",
-                    1,
-                    min(p1, p3) - 0.25 * atr,
-                    f"رأس وكتفين مقلوب + كسر العنق {neckline:.2f}",
-                    5
-                )
-
-    # =====================================================
-    # TRIPLE TOP
-    # =====================================================
-
-    if len(H) >= 3:
-
-        last_three = H[-3:]
-
-        prices = [
-            x[1]
-            for x in last_three
-        ]
-
-        if (
-            max(prices)
-            - min(prices)
-            <= 0.45 * atr
-            and H[-1][0] - H[-3][0] >= 10
-        ):
-
-            neckline = float(
-                d["Low"].iloc[
-                    H[-3][0]:H[-1][0] + 1
-                ].min()
-            )
-
-            if (
-                close < neckline
-                and previous_close >= neckline
-            ):
-
-                add(
-                    "Triple Top",
-                    -1,
-                    max(prices) + 0.25 * atr,
-                    f"Triple Top + كسر {neckline:.2f}",
-                    5
-                )
-
-    # =====================================================
-    # TRIPLE BOTTOM
-    # =====================================================
-
-    if len(L) >= 3:
-
-        last_three = L[-3:]
-
-        prices = [
-            x[1]
-            for x in last_three
-        ]
-
-        if (
-            max(prices)
-            - min(prices)
-            <= 0.45 * atr
-            and L[-1][0] - L[-3][0] >= 10
-        ):
-
-            neckline = float(
-                d["High"].iloc[
-                    L[-3][0]:L[-1][0] + 1
-                ].max()
-            )
-
-            if (
-                close > neckline
-                and previous_close <= neckline
-            ):
-
-                add(
-                    "Triple Bottom",
-                    1,
-                    min(prices) - 0.25 * atr,
-                    f"Triple Bottom + كسر {neckline:.2f}",
-                    5
-                )
-
-    # =====================================================
-    # TRIANGLE / WEDGE BREAKOUT
-    # =====================================================
-
-    if (
-        len(H) >= 2
-        and len(L) >= 2
-    ):
-
-        h1, h2 = H[-2], H[-1]
-        l1, l2 = L[-2], L[-1]
-
-        hs = (
-            h2[1] - h1[1]
-        ) / max(
-            h2[0] - h1[0],
-            1
-        )
-
-        ls = (
-            l2[1] - l1[1]
-        ) / max(
-            l2[0] - l1[0],
-            1
-        )
-
-        x = len(d) - 1
-
-        upper = (
-            h2[1]
-            + hs * (x - h2[0])
-        )
-
-        lower = (
-            l2[1]
-            + ls * (x - l2[0])
-        )
-
-        width = upper - lower
-
-        if (
-            width > 0
-            and width < 3.0 * atr
-        ):
-
-            if (
-                close > upper
-                and previous_close <= upper
-            ):
-
-                add(
-                    "Triangle / Wedge Breakout",
-                    1,
-                    lower,
-                    "كسر الحد العلوي للنموذج",
-                    4
-                )
-
-            elif (
-                close < lower
-                and previous_close >= lower
-            ):
-
-                add(
-                    "Triangle / Wedge Breakout",
-                    -1,
-                    upper,
-                    "كسر الحد السفلي للنموذج",
-                    4
-                )
-
-    return result
-
-
-# =========================================================
-# SUPPORT / RESISTANCE REJECTION
-# =========================================================
-
-def technical_setups(d):
-
-    result = []
-
-    if len(d) < 40:
-        return result
-
-    atr = float(
-        d["ATR"].iloc[-1]
-    )
-
-    close = float(
-        d["Close"].iloc[-1]
-    )
-
-    bull, bear, body, rng = candle_info(d)
-
-    H, L = swings(
-        d,
-        3
-    )
-
-    if len(H) >= 2:
-
-        resistance = H[-1][1]
-
-        if (
-            bear
-            and abs(close - resistance)
-            <= 0.5 * atr
-        ):
-
-            result.append(
-                {
-                    "name":
-                        "مقاومة + رفض",
-
-                    "dir":
-                        -1,
-
-                    "sl":
-                        resistance + 0.4 * atr,
-
-                    "tp_raw":
-                        None,
-
-                    "base":
-                        4,
-
-                    "why":
-                        (
-                            f"رفض واضح قرب مقاومة "
-                            f"{resistance:.2f}"
-                        )
-                }
-            )
-
-    if len(L) >= 2:
-
-        support = L[-1][1]
-
-        if (
-            bull
-            and abs(close - support)
-            <= 0.5 * atr
-        ):
-
-            result.append(
-                {
-                    "name":
-                        "دعم + رفض",
-
-                    "dir":
-                        1,
-
-                    "sl":
-                        support - 0.4 * atr,
-
-                    "tp_raw":
-                        None,
-
-                    "base":
-                        4,
-
-                    "why":
-                        (
-                            f"رفض واضح قرب دعم "
-                            f"{support:.2f}"
-                        )
-                }
-            )
-
-    return result
-
-
-# =========================================================
-# SCANNER
-# =========================================================
-
-def scan(
-    df,
-    timeframe,
-    pip
-):
-
-    d = prep(
-        df.copy()
-    )
-
-    d.attrs["tf"] = timeframe
-
-    if len(d) < 80:
-        return [], {}
-
-    price = float(
-        d["Close"].iloc[-1]
-    )
-
-    atr = float(
-        d["ATR"].iloc[-1]
-    )
-
-    rsi = float(
-        d["RSI"].iloc[-1]
-    )
-
-    setups = []
-
-    setups.extend(
-        liquidity_sweep(
-            d,
-            pip
-        )
-    )
-
-    setups.extend(
-        range_breakout(
-            d
-        )
-    )
-
-    setups.extend(
-        pattern_setups(
-            d
-        )
-    )
-
-    setups.extend(
-        technical_setups(
-            d
-        )
-    )
-
-    bull, bear, body, rng = candle_info(d)
-
-    for s in setups:
-
-        score = float(
-            s["base"]
-        )
-
-        tags = []
-
-        # شمعة تأكيد
-        if (
-            s["dir"] == 1
-            and bull
-        ) or (
-            s["dir"] == -1
-            and bear
-        ):
-
-            score += 1
-
-            tags.append(
-                "شمعة تأكيد"
-            )
-
-        # RSI
-        if (
-            s["dir"] == 1
-            and rsi < 55
-        ) or (
-            s["dir"] == -1
-            and rsi > 45
-        ):
-
-            score += 1
-
-            tags.append(
-                f"RSI مناسب {rsi:.0f}"
-            )
-
-        # قوة الشمعة
-        if body >= 0.7 * atr:
-
-            score += 1
-
-            tags.append(
-                "زخم شمعة قوي"
-            )
-
-        s["score"] = score
-        s["tags"] = tags
-
-    return setups, {
-        "price": price,
-        "atr": atr,
-        "rsi": rsi
-    }
-
-
-# =========================================================
-# BUILD TRADE
-# =========================================================
-
-def build(
-    setup,
-    price,
-    atr,
-    pip,
-    rr
-):
-
-    direction = setup["dir"]
-
-    sl = float(
-        setup["sl"]
-    )
-
-    # الستوب لازم يكون بالجهة الصحيحة
-    if (
-        direction == 1
-        and sl >= price
-    ):
+    except Exception as e:
+        print(f"TELEGRAM {method} EXCEPTION: {e}")
         return None
 
-    if (
-        direction == -1
-        and sl <= price
-    ):
-        return None
 
-    risk = abs(
-        price - sl
+def telegram_check():
+
+    data = telegram_call("getMe")
+
+    return bool(
+        data and
+        data.get("ok")
     )
 
-    # لا ستوب قريب جداً
-    if risk < 0.7 * atr:
 
-        sl = (
-            price
-            - direction * 0.7 * atr
+def tg(text):
+
+    print(text)
+
+    if not TG_TOKEN or not TG_CHAT:
+        print(
+            "TELEGRAM ERROR: "
+            "TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID missing"
         )
+        return False
 
-        risk = 0.7 * atr
-
-    # ولا ستوب بعيد بشكل مبالغ
-    if risk > 3.5 * atr:
-        return None
-
-    raw_tp = setup.get(
-        "tp_raw"
+    data = telegram_call(
+        "sendMessage",
+        {
+            "chat_id": TG_CHAT,
+            "text": text,
+            "disable_web_page_preview": True
+        }
     )
 
-    if (
-        raw_tp is not None
-        and (
-            (
-                direction == 1
-                and raw_tp > price
-            )
-            or
-            (
-                direction == -1
-                and raw_tp < price
-            )
-        )
-    ):
-
-        tp1 = float(
-            raw_tp
-        )
-
-    else:
-
-        tp1 = (
-            price
-            + direction * rr * risk
-        )
-
-    # لا نقبل TP ضعيف
-    if abs(tp1 - price) < 1.2 * risk:
-
-        tp1 = (
-            price
-            + direction * rr * risk
-        )
-
-    tp2 = (
-        price
-        + direction * max(
-            2.0 * risk,
-            rr * risk
-        )
+    return bool(
+        data and
+        data.get("ok")
     )
+
+
+# ============================================================
+# STATE
+# ============================================================
+
+def default_state():
 
     return {
-        "entry": price,
-        "sl": sl,
-        "tp1": tp1,
-        "tp2": tp2,
-        "risk_p": risk / pip,
-        "tp1_p": abs(
-            tp1 - price
-        ) / pip
+        "open": {},
+        "days": {},
+        "last_signals": {},
+        "last_startup": ""
     }
 
 
-# =========================================================
-# QUALITY
-# =========================================================
-
-def grade(score):
-
-    if score >= EXCELLENT_SCORE:
-
-        return (
-            "ممتازة ⭐⭐⭐",
-            "ممتازة"
-        )
-
-    if score >= GOOD_SCORE:
-
-        return (
-            "جيدة ⭐⭐",
-            "جيدة"
-        )
-
-    return (
-        "متوسطة ⭐",
-        "متوسطة"
-    )
-
-
-# =========================================================
-# STATE
-# =========================================================
-
-def load():
+def load_state():
 
     try:
 
         with open(
             STATE_FILE,
+            "r",
             encoding="utf-8"
         ) as f:
 
-            return json.load(f)
+            state = json.load(f)
+
+        default = default_state()
+
+        if isinstance(state, dict):
+            default.update(state)
+
+        return default
 
     except Exception:
 
-        return {
-            "open": [],
-            "days": {},
-            "last": {},
-            "sig": {}
-        }
+        return default_state()
 
 
-def save(st):
+def save_state(state):
+
+    temp_file = STATE_FILE + ".tmp"
 
     with open(
-        STATE_FILE,
+        temp_file,
         "w",
         encoding="utf-8"
     ) as f:
 
         json.dump(
-            st,
+            state,
             f,
             ensure_ascii=False,
-            indent=1
+            indent=2
         )
 
-
-# =========================================================
-# TELEGRAM
-# =========================================================
-
-def tg(text):
-
-    print(
-        "\n========== TELEGRAM =========="
+    os.replace(
+        temp_file,
+        STATE_FILE
     )
 
-    print(text)
 
-    if not TG_TOKEN:
+def day_key():
 
-        print(
-            "❌ TELEGRAM_BOT_TOKEN غير موجود"
-        )
+    return datetime.now(
+        timezone.utc
+    ).strftime("%Y-%m-%d")
 
-        return False
 
-    if not TG_CHAT:
+def day_stats(state):
 
-        print(
-            "❌ TELEGRAM_CHAT_ID غير موجود"
-        )
-
-        return False
-
-    url = (
-        "https://api.telegram.org/"
-        f"bot{TG_TOKEN}/sendMessage"
+    day = state["days"].setdefault(
+        day_key(),
+        {
+            "trades": 0,
+            "wins": 0,
+            "losses": 0,
+            "neutral": 0
+        }
     )
 
-    try:
-
-        response = requests.post(
-            url,
-            json={
-                "chat_id": TG_CHAT,
-                "text": text
-            },
-            timeout=20
-        )
-
-        print(
-            "Telegram HTTP:",
-            response.status_code
-        )
-
-        print(
-            "Telegram response:",
-            response.text[:500]
-        )
-
-        if response.status_code == 200:
-
-            try:
-
-                data = response.json()
-
-                if data.get("ok") is True:
-
-                    SENT.append(text)
-
-                    print(
-                        "✅ TELEGRAM MESSAGE SENT"
-                    )
-
-                    return True
-
-            except Exception:
-
-                pass
-
-        print(
-            "❌ TELEGRAM MESSAGE FAILED"
-        )
-
-        return False
-
-    except Exception as e:
-
-        print(
-            "❌ TELEGRAM CONNECTION ERROR:",
-            repr(e)
-        )
-
-        return False
+    return day
 
 
-def telegram_check():
+# ============================================================
+# DATA
+# ============================================================
 
-    if not TG_TOKEN:
-
-        print(
-            "❌ TELEGRAM_BOT_TOKEN غير موجود"
-        )
-
-        return False
-
-    if not TG_CHAT:
-
-        print(
-            "❌ TELEGRAM_CHAT_ID غير موجود"
-        )
-
-        return False
-
-    try:
-
-        response = requests.get(
-            (
-                "https://api.telegram.org/"
-                f"bot{TG_TOKEN}/getMe"
-            ),
-            timeout=15
-        )
-
-        print(
-            "Telegram getMe:",
-            response.status_code
-        )
-
-        print(
-            "Telegram getMe response:",
-            response.text[:500]
-        )
-
-        if response.status_code != 200:
-
-            return False
-
-        data = response.json()
-
-        if not data.get("ok"):
-
-            return False
-
-        bot_name = (
-            data
-            .get("result", {})
-            .get("username", "unknown")
-        )
-
-        print(
-            f"✅ Telegram Bot OK: @{bot_name}"
-        )
-
-        return tg(
-            "🤖 BOT STARTED\n\n"
-            "✅ Telegram متصل بنجاح\n"
-            "📊 XAU/USD: مراقبة M5 + M15\n"
-            "🔒 صفقة واحدة فقط بنفس الوقت\n"
-            "🧠 إدارة الصفقة + Early Exit مفعلة\n\n"
-            "⏳ عم بفحص السوق..."
-        )
-
-    except Exception as e:
-
-        print(
-            "❌ Telegram check error:",
-            repr(e)
-        )
-
-        return False
-
-
-# =========================================================
-# EARLY EXIT
-# =========================================================
-
-def reversal_reasons(
-    df,
-    trade,
-    live
+def fetch(
+    symbol=SYMBOL,
+    interval="5min",
+    outputsize=900
 ):
 
-    d = prep(df)
+    if not TD_KEY:
+        raise RuntimeError(
+            "TWELVE_DATA_API_KEY is missing"
+        )
 
-    if len(d) < 40:
-        return []
-
-    atr = float(
-        d["ATR"].iloc[-1]
+    response = requests.get(
+        "https://api.twelvedata.com/time_series",
+        params={
+            "symbol": symbol,
+            "interval": interval,
+            "outputsize": outputsize,
+            "apikey": TD_KEY,
+            "format": "JSON",
+            "timezone": "UTC"
+        },
+        timeout=20
     )
 
-    direction = trade["dir"]
-
-    risk = abs(
-        trade["entry"]
-        - trade["sl"]
-    )
-
-    if risk <= 0:
-        return []
-
-    current_r = (
-        direction
-        * (
-            live
-            - trade["entry"]
-        )
-        / risk
-    )
-
-    H, L = swings(
-        d,
-        2
-    )
-
-    bull, bear, body, rng = candle_info(d)
-
-    reasons = []
-
-    # -----------------------------------------------------
-    # 1. كسر هيكل عكس الصفقة
-    # -----------------------------------------------------
+    data = response.json()
 
     if (
-        direction == 1
-        and L
+        response.status_code != 200
+        or "values" not in data
     ):
 
-        level = L[-1][1]
-
-        if (
-            d["Close"].iloc[-1]
-            < level
-            and
-            d["Close"].iloc[-2]
-            >= level
-        ):
-
-            reasons.append(
-                "كسر هيكل هابط بعد الدخول"
-            )
-
-    if (
-        direction == -1
-        and H
-    ):
-
-        level = H[-1][1]
-
-        if (
-            d["Close"].iloc[-1]
-            > level
-            and
-            d["Close"].iloc[-2]
-            <= level
-        ):
-
-            reasons.append(
-                "كسر هيكل صاعد بعد الدخول"
-            )
-
-    # -----------------------------------------------------
-    # 2. شمعة زخم قوية عكس الصفقة
-    # -----------------------------------------------------
-
-    if (
-        direction == 1
-        and bear
-        and body >= 0.8 * atr
-    ):
-
-        reasons.append(
-            "شمعة زخم قوية عكس الشراء"
+        raise RuntimeError(
+            f"Twelve Data: "
+            f"{data.get('message', data)}"
         )
-
-    if (
-        direction == -1
-        and bull
-        and body >= 0.8 * atr
-    ):
-
-        reasons.append(
-            "شمعة زخم قوية عكس البيع"
-        )
-
-    # -----------------------------------------------------
-    # 3. كسر EMA50 مع الاتجاه المعاكس
-    # -----------------------------------------------------
-
-    ema_now = float(
-        d["EMA50"].iloc[-1]
-    )
-
-    ema_prev = float(
-        d["EMA50"].iloc[-2]
-    )
-
-    if (
-        direction == 1
-        and d["Close"].iloc[-1] < ema_now
-        and d["Close"].iloc[-2] >= ema_prev
-    ):
-
-        reasons.append(
-            "كسر EMA50 عكس صفقة الشراء"
-        )
-
-    if (
-        direction == -1
-        and d["Close"].iloc[-1] > ema_now
-        and d["Close"].iloc[-2] <= ema_prev
-    ):
-
-        reasons.append(
-            "كسر EMA50 عكس صفقة البيع"
-        )
-
-    # -----------------------------------------------------
-    # 4. إذا وصلت الصفقة لمنطقة سلبية قوية
-    # -----------------------------------------------------
-
-    if current_r <= -0.6:
-
-        reasons.append(
-            f"السعر وصل {current_r:+.2f}R مع علامات انعكاس"
-        )
-
-    # نحتاج أكثر من دليل
-    if len(reasons) >= EARLY_EXIT_SCORE:
-
-        return reasons
-
-    # حالة خاصة:
-    # كسر هيكل + شمعة قوية يكفيان
-    if (
-        len(reasons) >= 2
-        and (
-            "كسر هيكل"
-            in " ".join(reasons)
-        )
-    ):
-
-        return reasons
-
-    return []
-
-
-# =========================================================
-# CHECK OPEN TRADE
-# =========================================================
-
-def check_open(
-    st,
-    m5s,
-    frames,
-    now,
-    day
-):
-
-    still_open = []
-
-    for trade in st["open"]:
-
-        symbol = trade["sym"]
-
-        df = m5s.get(
-            symbol
-        )
-
-        if df is None:
-
-            still_open.append(
-                trade
-            )
-
-            continue
-
-        trade_time = pd.Timestamp(
-            trade["time"]
-        )
-
-        live = float(
-            df["Close"].iloc[-1]
-        )
-
-        risk = abs(
-            trade["entry"]
-            - trade["sl"]
-        )
-
-        if risk <= 0:
-            risk = 1e-9
-
-        result = None
-
-        # -------------------------------------------------
-        # فحص TP / SL
-        # -------------------------------------------------
-
-        candles_after = df[
-            df.index > trade_time
-        ]
-
-        for _, c in candles_after.iterrows():
-
-            if trade["dir"] == 1:
-
-                sl_hit = (
-                    c["Low"]
-                    <= trade["sl"]
-                )
-
-                tp_hit = (
-                    c["High"]
-                    >= trade["tp1"]
-                )
-
-            else:
-
-                sl_hit = (
-                    c["High"]
-                    >= trade["sl"]
-                )
-
-                tp_hit = (
-                    c["Low"]
-                    <= trade["tp1"]
-                )
-
-            # إذا لمس الاثنين بنفس الشمعة
-            # نعتبر الستوب أولاً للتحفظ
-            if sl_hit:
-
-                result = "SL"
-
-                break
-
-            if tp_hit:
-
-                result = "TP1"
-
-                break
-
-        current_r = (
-            trade["dir"]
-            * (
-                live
-                - trade["entry"]
-            )
-            / risk
-        )
-
-        # -------------------------------------------------
-        # TP
-        # -------------------------------------------------
-
-        if result == "TP1":
-
-            day["wins"] += 1
-
-            day["r"] += float(
-                trade.get(
-                    "rr",
-                    RR
-                )
-            )
-
-            tg(
-                "✅ TP1 HIT\n"
-                f"{symbol} {trade['tf']}\n"
-                f"{trade['name']}\n\n"
-                f"Entry: {trade['entry']:.2f}\n"
-                f"TP1: {trade['tp1']:.2f}\n\n"
-                "🤖 الصفقة أُغلقت حسابياً.\n"
-                "🔎 البوت رجع يدور على Setup جديد."
-            )
-
-            continue
-
-        # -------------------------------------------------
-        # SL
-        # -------------------------------------------------
-
-        if result == "SL":
-
-            day["losses"] += 1
-
-            day["r"] -= 1
-
-            tg(
-                "❌ SL HIT\n"
-                f"{symbol} {trade['tf']}\n"
-                f"{trade['name']}\n\n"
-                f"Entry: {trade['entry']:.2f}\n"
-                f"SL: {trade['sl']:.2f}\n\n"
-                "🤖 الصفقة انتهت.\n"
-                "🔎 البوت رجع يدور على Setup جديد."
-            )
-
-            continue
-
-        # -------------------------------------------------
-        # انتهاء زمني
-        # -------------------------------------------------
-
-        age_hours = (
-            now - trade_time
-        ).total_seconds() / 3600
-
-        if age_hours >= EXPIRE_HOURS:
-
-            tg(
-                "⌛ EXPIRED\n"
-                f"{symbol} {trade['tf']}\n"
-                f"{trade['name']}\n\n"
-                f"مدة الصفقة: {age_hours:.1f} ساعة\n"
-                f"النتيجة الحالية: {current_r:+.2f}R\n\n"
-                "البوت أغلقها حسابياً ورجع يراقب السوق."
-            )
-
-            continue
-
-        # -------------------------------------------------
-        # EARLY EXIT
-        # -------------------------------------------------
-
-        frame = (
-            frames
-            .get(symbol, {})
-            .get(
-                trade.get(
-                    "tf",
-                    "5min"
-                )
-            )
-        )
-
-        reasons = []
-
-        if frame is not None:
-
-            reasons = reversal_reasons(
-                frame["df"],
-                trade,
-                live
-            )
-
-        if reasons:
-
-            day["early"] += 1
-
-            day["r"] += current_r
-
-            if current_r > 0.05:
-
-                day["wins"] += 1
-
-            elif current_r < -0.05:
-
-                day["losses"] += 1
-
-            tg(
-                "🚨 EARLY EXIT\n"
-                f"{symbol} {trade['tf']}\n"
-                f"{trade['name']}\n\n"
-                f"Entry: {trade['entry']:.2f}\n"
-                f"Current: {live:.2f}\n"
-                f"Result: {current_r:+.2f}R\n\n"
-                "أسباب الانعكاس:\n"
-                + "\n".join(
-                    "• " + x
-                    for x in reasons
-                )
-                + "\n\n"
-                "🛑 الصفقة أُغلقت حسابياً.\n"
-                "🔒 لن يفتح البوت صفقة عكسية قبل انتهاء هذه الصفقة."
-            )
-
-            continue
-
-        # -------------------------------------------------
-        # الصفقة ما زالت مفتوحة
-        # -------------------------------------------------
-
-        still_open.append(
-            trade
-        )
-
-    st["open"] = still_open
-
-
-# =========================================================
-# FETCH DATA
-# =========================================================
-
-def fetch(symbol):
-
-    try:
-
-        response = requests.get(
-            "https://api.twelvedata.com/time_series",
-            timeout=30,
-            params={
-                "symbol": symbol,
-                "interval": "5min",
-                "outputsize": 5000,
-                "timezone": "UTC",
-                "apikey": TD_KEY
-            }
-        )
-
-        data = response.json()
-
-    except Exception as e:
-
-        LAST_ERR["msg"] = str(e)[:300]
-
-        return None
-
-    if "values" not in data:
-
-        LAST_ERR["msg"] = str(
-            data.get(
-                "message",
-                data
-            )
-        )[:300]
-
-        print(
-            "DATA ERROR:",
-            LAST_ERR["msg"]
-        )
-
-        return None
 
     df = pd.DataFrame(
         data["values"]
     )
 
-    df["datetime"] = pd.to_datetime(
-        df["datetime"]
-    )
-
-    for c in [
+    for column in [
         "open",
         "high",
         "low",
-        "close"
+        "close",
+        "volume"
     ]:
 
-        df[c] = df[c].astype(
-            float
+        if column not in df.columns:
+            df[column] = 0.0
+
+        df[column] = pd.to_numeric(
+            df[column],
+            errors="coerce"
         )
+
+    df["datetime"] = pd.to_datetime(
+        df["datetime"],
+        utc=True
+    ).dt.tz_convert(None)
 
     df = (
         df
         .sort_values("datetime")
+        .drop_duplicates("datetime")
         .set_index("datetime")
     )
 
-    df.columns = [
-        c.capitalize()
-        for c in df.columns
-    ]
-
-    return df[
-        [
-            "Open",
-            "High",
-            "Low",
-            "Close"
+    return df.dropna(
+        subset=[
+            "open",
+            "high",
+            "low",
+            "close"
         ]
-    ]
+    )
 
 
-# =========================================================
-# RESAMPLE
-# =========================================================
+def resample(df, rule):
 
-def rs(
-    df,
-    rule
-):
-
-    if rule == "5min":
-        return df
-
-    return (
-        df
-        .resample(rule)
+    result = (
+        df[
+            [
+                "open",
+                "high",
+                "low",
+                "close",
+                "volume"
+            ]
+        ]
+        .resample(
+            rule,
+            label="left",
+            closed="left"
+        )
         .agg(
             {
-                "Open": "first",
-                "High": "max",
-                "Low": "min",
-                "Close": "last"
+                "open": "first",
+                "high": "max",
+                "low": "min",
+                "close": "last",
+                "volume": "sum"
             }
         )
         .dropna()
     )
 
+    return result
 
-# =========================================================
-# MAIN
-# =========================================================
 
-def main():
+def clean_completed(df, minutes):
 
-    print(
-        "=" * 60
+    if df.empty:
+        return df
+
+    cutoff = (
+        pd.Timestamp.now(tz="UTC")
+        .tz_convert(None)
+        .floor(f"{minutes}min")
     )
 
-    print(
-        "🤖 XAU/USD BOT STARTING"
+    return df[
+        df.index < cutoff
+    ].copy()
+
+
+# ============================================================
+# INDICATORS
+# ============================================================
+
+def indicators(df):
+
+    d = df.copy()
+
+    d["ema20"] = (
+        d.close
+        .ewm(
+            span=20,
+            adjust=False
+        )
+        .mean()
     )
 
-    print(
-        "=" * 60
+    d["ema50"] = (
+        d.close
+        .ewm(
+            span=50,
+            adjust=False
+        )
+        .mean()
     )
 
-    # -----------------------------------------------------
-    # STATE
-    # -----------------------------------------------------
+    delta = d.close.diff()
 
-    st = load()
-
-    st.setdefault(
-        "open",
-        []
+    gain = (
+        delta
+        .clip(lower=0)
+        .rolling(14)
+        .mean()
     )
 
-    st.setdefault(
-        "last",
-        {}
+    loss = (
+        -delta
+        .clip(upper=0)
+        .rolling(14)
+        .mean()
     )
 
-    st.setdefault(
-        "sig",
-        {}
+    rs = gain / loss.replace(
+        0,
+        np.nan
     )
 
-    # -----------------------------------------------------
-    # TIME
-    # -----------------------------------------------------
-
-    now = pd.Timestamp(
-        datetime.now(
-            timezone.utc
-        ).replace(
-            tzinfo=None
-        )
+    d["rsi"] = 100 - (
+        100 / (1 + rs)
     )
 
-    today = now.strftime(
-        "%Y-%m-%d"
+    true_range = pd.concat(
+        [
+            d.high - d.low,
+            (
+                d.high -
+                d.close.shift()
+            ).abs(),
+            (
+                d.low -
+                d.close.shift()
+            ).abs()
+        ],
+        axis=1
+    ).max(axis=1)
+
+    d["atr"] = (
+        true_range
+        .rolling(14)
+        .mean()
     )
 
-    day = (
-        st
-        .setdefault(
-            "days",
-            {}
-        )
-        .setdefault(
-            today,
-            {
-                "sent": 0,
-                "wins": 0,
-                "losses": 0,
-                "early": 0,
-                "r": 0.0,
-                "summary": False
-            }
-        )
+    d["body"] = (
+        d.close -
+        d.open
+    ).abs()
+
+    d["range"] = (
+        d.high -
+        d.low
+    ).replace(
+        0,
+        np.nan
     )
 
-    day.setdefault(
-        "early",
-        0
+    d["body_pct"] = (
+        d.body /
+        d.range
     )
 
-    # -----------------------------------------------------
-    # TELEGRAM STARTUP
-    # -----------------------------------------------------
-
-    last_start = st.get(
-        "startup_msg"
+    d["upper_wick"] = (
+        d.high -
+        d[["open", "close"]].max(axis=1)
     )
 
-    should_startup = (
-        not last_start
-        or
-        (
-            now
-            - pd.Timestamp(
-                last_start
-            )
-        ).total_seconds()
-        >= 21600
+    d["lower_wick"] = (
+        d[["open", "close"]].min(axis=1) -
+        d.low
     )
 
-    if should_startup:
-
-        if telegram_check():
-
-            st["startup_msg"] = (
-                now.isoformat()
-            )
-
-    # -----------------------------------------------------
-    # TWELVE DATA
-    # -----------------------------------------------------
-
-    if not TD_KEY:
-
-        print(
-            "❌ TWELVE_DATA_API_KEY غير موجود"
-        )
-
-        tg(
-            "🔴 BOT ERROR\n\n"
-            "TWELVE_DATA_API_KEY غير موجود "
-            "داخل GitHub Secrets."
-        )
-
-        save(st)
-
-        sys.exit(0)
-
-    # -----------------------------------------------------
-    # FETCH
-    # -----------------------------------------------------
-
-    m5_data = {}
-
-    for symbol in SYMBOLS:
-
-        df = fetch(
-            symbol
-        )
-
-        if (
-            df is not None
-            and len(df) > 500
-        ):
-
-            m5_data[
-                symbol
-            ] = df
-
-        time.sleep(
-            1
-        )
-
-    # -----------------------------------------------------
-    # DATA ERROR
-    # -----------------------------------------------------
-
-    if not m5_data:
-
-        tg(
-            "⚠️ DATA ERROR\n\n"
-            "البوت اشتغل، لكن Twelve Data "
-            "ما رجّع بيانات للسوق.\n\n"
-            f"{LAST_ERR['msg']}"
-        )
-
-        save(st)
-
-        return
-
-    # -----------------------------------------------------
-    # FRAMES
-    # -----------------------------------------------------
-
-    frames = {}
-
-    for symbol, df in m5_data.items():
-
-        m5_completed = (
-            df.iloc[:-1]
-        )
-
-        m15 = rs(
-            df,
-            "15min"
-        )
-
-        m15_completed = (
-            m15.iloc[:-1]
-        )
-
-        frames[
-            symbol
-        ] = {
-
-            "5min": {
-                "df":
-                    m5_completed
-            },
-
-            "15min": {
-                "df":
-                    m15_completed
-            }
-        }
-
-    # -----------------------------------------------------
-    # MANAGE OPEN TRADES FIRST
-    # -----------------------------------------------------
-
-    check_open(
-        st,
-        m5_data,
-        frames,
-        now,
-        day
+    d["vol_ma"] = (
+        d.volume
+        .replace(0, np.nan)
+        .rolling(20)
+        .mean()
     )
 
-    # -----------------------------------------------------
-    # إذا بقيت صفقة مفتوحة
-    # لا نفتح أي صفقة جديدة
-    # -----------------------------------------------------
+    d["vol_ratio"] = (
+        d.volume /
+        d.vol_ma
+    )
 
-    if st["open"]:
+    return d
 
-        print(
-            "🔒 Open trade exists. "
-            "No new trade."
+
+def next_open(
+    df,
+    completed_index
+):
+
+    position = df.index.get_indexer(
+        [completed_index]
+    )[0]
+
+    if (
+        position >= 0
+        and position + 1 < len(df)
+    ):
+
+        return float(
+            df.iloc[position + 1].open
         )
 
-        save(st)
+    return float(
+        df.loc[
+            completed_index,
+            "close"
+        ]
+    )
 
-        return
 
-    # -----------------------------------------------------
-    # DAILY LIMITS
-    # -----------------------------------------------------
+# ============================================================
+# HELPERS
+# ============================================================
 
-    if day["losses"] >= MAX_LOSSES:
+def fmt(value):
 
-        print(
-            "Daily loss limit reached."
-        )
+    return f"{float(value):.2f}"
 
-        save(st)
 
-        return
+def candle_strength(
+    row,
+    direction
+):
 
-    if day["sent"] >= MAX_PER_DAY:
+    if row.range <= 0:
+        return 0
 
-        print(
-            "Daily trade limit reached."
-        )
+    if direction == "BUY":
 
-        save(st)
-
-        return
-
-    # -----------------------------------------------------
-    # SCAN M5 + M15
-    # -----------------------------------------------------
-
-    candidates = []
-
-    for symbol, symbol_frames in frames.items():
-
-        pip = PIPS.get(
-            symbol,
-            0.0001
-        )
-
-        live = float(
-            m5_data[
-                symbol
-            ]["Close"].iloc[-1]
-        )
-
-        for timeframe, frame in symbol_frames.items():
-
-            d = frame["df"]
-
-            if len(d) < 80:
-                continue
-
-            setups, ctx = scan(
-                d,
-                timeframe,
-                pip
-            )
-
-            # M5 يحتاج فلترة أقوى
-            required_score = (
-                MIN_SCORE
-                + (
-                    1
-                    if timeframe == "5min"
-                    else 0
-                )
-            )
-
-            for setup in setups:
-
-                score = float(
-                    setup["score"]
-                )
-
-                if score < required_score:
-                    continue
-
-                # -----------------------------------------
-                # منع الإشارة المكررة
-                # -----------------------------------------
-
-                candle_time = (
-                    d.index[-1]
-                    .isoformat()
-                )
-
-                signal_key = (
-                    f"{symbol}|"
-                    f"{timeframe}|"
-                    f"{setup['name']}|"
-                    f"{setup['dir']}|"
-                    f"{candle_time}"
-                )
-
-                if signal_key in st["sig"]:
-
-                    continue
-
-                # -----------------------------------------
-                # بناء الصفقة
-                # -----------------------------------------
-
-                trade = build(
-                    setup,
-                    live,
-                    ctx["atr"],
-                    pip,
-                    RR
-                )
-
-                if trade is None:
-
-                    continue
-
-                quality, quality_key = grade(
-                    score
-                )
-
-                setup.update(
-                    trade
-                )
-
-                setup["sym"] = symbol
-                setup["tf"] = timeframe
-                setup["key"] = signal_key
-                setup["quality"] = quality
-                setup["quality_key"] = quality_key
-
-                candidates.append(
-                    setup
-                )
-
-    # -----------------------------------------------------
-    # اختيار أفضل فرصة واحدة
-    # -----------------------------------------------------
-
-    if candidates:
-
-        best = max(
-            candidates,
-            key=lambda x: (
-                x["score"],
-                1 if x["tf"] == "15min" else 0
+        return int(
+            row.close > row.open
+            and row.body_pct >= 0.55
+            and row.close >= (
+                row.low +
+                0.70 * row.range
             )
         )
 
-        side = (
-            "شراء 🟢"
-            if best["dir"] == 1
-            else "بيع 🔴"
+    return int(
+        row.close < row.open
+        and row.body_pct >= 0.55
+        and row.close <= (
+            row.low +
+            0.30 * row.range
         )
+    )
 
-        tags_text = ""
 
-        if best.get("tags"):
+def nearest_level(
+    levels,
+    price,
+    direction
+):
 
-            tags_text = "\n".join(
-                "• " + x
-                for x in best["tags"]
+    values = sorted(
+        set(
+            float(x)
+            for x in levels
+            if np.isfinite(x)
+        )
+    )
+
+    if direction == "BUY":
+
+        above = [
+            x
+            for x in values
+            if x > price
+        ]
+
+        if above:
+            return min(
+                above,
+                key=lambda x: x - price
             )
-
-        message = (
-            f"⚡ {side} — {best['sym']}\n\n"
-
-            f"⭐ الجودة: "
-            f"{best['quality']}\n"
-
-            f"📊 الفريم: "
-            f"{best['tf']}\n"
-
-            f"🎯 الاستراتيجية: "
-            f"{best['name']}\n\n"
-
-            f"Entry: "
-            f"{best['entry']:.2f}\n"
-
-            f"SL: "
-            f"{best['sl']:.2f} "
-            f"({best['risk_p']:.0f} نقطة)\n"
-
-            f"TP1: "
-            f"{best['tp1']:.2f} "
-            f"({best['tp1_p']:.0f} نقطة)\n"
-
-            f"TP2: "
-            f"{best['tp2']:.2f}\n\n"
-
-            f"🧠 سبب الصفقة:\n"
-            f"{best['why']}\n\n"
-
-            f"{tags_text}\n\n"
-
-            "🔒 إدارة الصفقة:\n"
-            "• لا توجد صفقة عكسية أثناء فتح هذه الصفقة.\n"
-            "• البوت يراقب TP / SL.\n"
-            "• إذا ظهر انعكاس قوي، يرسل EARLY EXIT.\n"
-            "• بعد انتهاء الصفقة يرجع يبحث مباشرة.\n\n"
-
-            f"📈 صفقات اليوم: "
-            f"{day['sent'] + 1}/{MAX_PER_DAY}"
-        )
-
-        tg(
-            message
-        )
-
-        # -------------------------------------------------
-        # تخزين الصفقة
-        # -------------------------------------------------
-
-        st["open"].append(
-            {
-                "sym":
-                    best["sym"],
-
-                "dir":
-                    best["dir"],
-
-                "entry":
-                    best["entry"],
-
-                "sl":
-                    best["sl"],
-
-                "tp1":
-                    best["tp1"],
-
-                "tp2":
-                    best["tp2"],
-
-                "rr":
-                    RR,
-
-                "name":
-                    best["name"],
-
-                "tf":
-                    best["tf"],
-
-                "time":
-                    now.isoformat(),
-
-                "quality":
-                    best["quality_key"]
-            }
-        )
-
-        st["sig"][
-            best["key"]
-        ] = now.isoformat()
-
-        day["sent"] += 1
-
-        st["last"][
-            best["sym"]
-        ] = now.isoformat()
-
-    # -----------------------------------------------------
-    # NO SETUP
-    # -----------------------------------------------------
 
     else:
 
-        last_heartbeat = st.get(
-            "heartbeat"
-        )
+        below = [
+            x
+            for x in values
+            if x < price
+        ]
 
-        should_heartbeat = (
-            not last_heartbeat
-            or
-            (
-                now
-                - pd.Timestamp(
-                    last_heartbeat
-                )
-            ).total_seconds()
-            >= HEARTBEAT_HOURS * 3600
-        )
-
-        if should_heartbeat:
-
-            tg(
-                "🫀 BOT ALIVE\n\n"
-                "✅ البوت شغال\n"
-                "📊 XAU/USD: M5 + M15\n"
-                "🔎 تم فحص السوق\n"
-                "❌ لا يوجد Setup مطابق لشروطنا حالياً\n\n"
-                f"📈 صفقات اليوم: "
-                f"{day['sent']}/{MAX_PER_DAY}\n"
-                f"❌ خسائر: "
-                f"{day['losses']}/{MAX_LOSSES}\n"
-                f"🕐 {now:%H:%M} UTC"
+        if below:
+            return max(
+                below,
+                key=lambda x: price - x
             )
 
-            st["heartbeat"] = (
-                now.isoformat()
-            )
+    return None
 
-    # -----------------------------------------------------
-    # تنظيف الإشارات القديمة
-    # -----------------------------------------------------
 
-    cleaned = {}
+def local_pivots(
+    df,
+    n=2
+):
 
-    for key, value in st["sig"].items():
+    highs = []
+    lows = []
 
-        try:
+    if len(df) < (
+        2 * n + 1
+    ):
+        return highs, lows
 
-            age = (
-                now
-                - pd.Timestamp(value)
-            ).total_seconds()
-
-            if age < 86400:
-
-                cleaned[
-                    key
-                ] = value
-
-        except Exception:
-
-            pass
-
-    st["sig"] = cleaned
-
-    # -----------------------------------------------------
-    # DAILY SUMMARY
-    # -----------------------------------------------------
-
-    if (
-        now.hour >= 21
-        and not day.get(
-            "summary",
-            False
-        )
+    for i in range(
+        n,
+        len(df) - n
     ):
 
-        tg(
-            f"📊 DAILY SUMMARY\n\n"
-            f"التاريخ: {today}\n"
-            f"الصفقات: {day['sent']}\n"
-            f"الرابحة: {day['wins']}\n"
-            f"الخاسرة: {day['losses']}\n"
-            f"Early Exit: {day['early']}\n"
-            f"صافي R: {day['r']:+.1f}"
+        high = float(
+            df.high.iloc[i]
         )
 
-        day["summary"] = True
+        low = float(
+            df.low.iloc[i]
+        )
 
-    # -----------------------------------------------------
-    # SAVE
-    # -----------------------------------------------------
+        if high >= float(
+            df.high.iloc[
+                i - n:i + n + 1
+            ].max()
+        ):
 
-    save(st)
+            highs.append(
+                (
+                    df.index[i],
+                    high
+                )
+            )
 
-    print(
-        "=" * 60
+        if low <= float(
+            df.low.iloc[
+                i - n:i + n + 1
+            ].min()
+        ):
+
+            lows.append(
+                (
+                    df.index[i],
+                    low
+                )
+            )
+
+    return highs, lows
+
+
+def risk_ok(
+    entry,
+    sl,
+    tp,
+    atr
+):
+
+    risk = abs(
+        entry - sl
     )
 
-    print(
-        "✅ BOT FINISHED"
+    reward = abs(
+        tp - entry
     )
 
-    print(
-        "=" * 60
+    if (
+        risk <= 0
+        or not np.isfinite(atr)
+        or atr <= 0
+    ):
+        return False
+
+    if risk < 0.25 * atr:
+        return False
+
+    if risk > 2.5 * atr:
+        return False
+
+    if reward / risk < 1.45:
+        return False
+
+    return True
+
+
+def finalize_setup(
+    setup,
+    df
+):
+
+    entry = float(
+        setup["entry"]
+    )
+
+    sl = float(
+        setup["sl"]
+    )
+
+    tp = float(
+        setup["tp"]
+    )
+
+    atr = float(
+        setup.get(
+            "atr",
+            df.atr.iloc[-1]
+        )
+    )
+
+    direction = setup["direction"]
+
+    if direction == "BUY":
+
+        if not (
+            sl < entry < tp
+        ):
+            return None
+
+    else:
+
+        if not (
+            tp < entry < sl
+        ):
+            return None
+
+    if not risk_ok(
+        entry,
+        sl,
+        tp,
+        atr
+    ):
+        return None
+
+    rr = (
+        abs(tp - entry) /
+        abs(entry - sl)
+    )
+
+    row = df.iloc[-1]
+
+    score = int(
+        setup.get("base", 5)
+    )
+
+    score += candle_strength(
+        row,
+        direction
+    )
+
+    score += int(
+        rr >= 2.0
+    )
+
+    if np.isfinite(
+        row.vol_ratio
+    ):
+
+        score += int(
+            row.vol_ratio >= 1.15
+        )
+
+    score += int(
+        abs(
+            entry -
+            float(row.ema20)
+        ) <= 0.55 * atr
+    )
+
+    score = max(
+        1,
+        min(10, score)
+    )
+
+    if score < MIN_SCORE:
+        return None
+
+    setup.update(
+        {
+            "score": score,
+            "rr": rr,
+            "atr": atr,
+            "signal_time": str(
+                df.index[-1]
+            )
+        }
+    )
+
+    return setup
+
+
+# ============================================================
+# 1 — LIQUIDITY SWEEP + CHOCH
+# ============================================================
+
+def sweep_choch(df):
+
+    if len(df) < 120:
+        return []
+
+    result = []
+
+    end = len(df) - 1
+
+    for sweep_index in range(
+        max(35, end - 18),
+        end + 1
+    ):
+
+        timestamp = df.index[
+            sweep_index
+        ]
+
+        hour_start = timestamp.floor("h")
+
+        previous_hour = df[
+            (
+                df.index >=
+                hour_start -
+                pd.Timedelta(hours=1)
+            )
+            &
+            (
+                df.index <
+                hour_start
+            )
+        ]
+
+        if len(previous_hour) < 6:
+            continue
+
+        previous_high = float(
+            previous_hour.high.max()
+        )
+
+        previous_low = float(
+            previous_hour.low.min()
+        )
+
+        candle = df.iloc[
+            sweep_index
+        ]
+
+        atr = float(
+            df.atr.iloc[
+                sweep_index
+            ]
+        )
+
+        if not np.isfinite(atr):
+            continue
+
+        # HIGH SWEEP
+        swept_high = (
+            float(candle.high)
+            >
+            previous_high +
+            0.10 * atr
+            and
+            float(candle.close)
+            <
+            previous_high
+            and
+            float(candle.upper_wick)
+            >=
+            max(
+                float(candle.lower_wick),
+                float(candle.body) * 0.8
+            )
+        )
+
+        # LOW SWEEP
+        swept_low = (
+            float(candle.low)
+            <
+            previous_low -
+            0.10 * atr
+            and
+            float(candle.close)
+            >
+            previous_low
+            and
+            float(candle.lower_wick)
+            >=
+            max(
+                float(candle.upper_wick),
+                float(candle.body) * 0.8
+            )
+        )
+
+        if not (
+            swept_high
+            or
+            swept_low
+        ):
+            continue
+
+        before_sweep = df.iloc[
+            :sweep_index
+        ]
+
+        highs, lows = local_pivots(
+            before_sweep,
+            2
+        )
+
+        # HIGH SWEEP -> SELL
+        if swept_high and lows:
+
+            minor_low = lows[-1][1]
+
+            for j in range(
+                sweep_index + 1,
+                min(
+                    sweep_index + 6,
+                    end + 1
+                )
+            ):
+
+                current = df.iloc[j]
+
+                if (
+                    float(current.close)
+                    <
+                    minor_low
+                ):
+
+                    entry = next_open(
+                        df,
+                        df.index[j]
+                    )
+
+                    sl = (
+                        float(candle.high)
+                        +
+                        SWEEP_SL_PRICE
+                    )
+
+                    target = nearest_level(
+                        [
+                            x
+                            for _, x in lows
+                        ],
+                        entry,
+                        "SELL"
+                    )
+
+                    if target is None:
+                        target = (
+                            entry -
+                            2 *
+                            abs(
+                                sl -
+                                entry
+                            )
+                        )
+
+                    setup = {
+                        "strategy":
+                            "Liquidity Sweep + CHOCH",
+
+                        "direction":
+                            "SELL",
+
+                        "entry":
+                            entry,
+
+                        "sl":
+                            sl,
+
+                        "tp":
+                            target,
+
+                        "base":
+                            6,
+
+                        "atr":
+                            float(
+                                df.atr.iloc[j]
+                            ),
+
+                        "reason":
+                            (
+                                "Previous-hour high "
+                                f"swept at {fmt(previous_high)}, "
+                                "then CHOCH below "
+                                f"{fmt(minor_low)}"
+                            )
+                    }
+
+                    setup = finalize_setup(
+                        setup,
+                        df.iloc[
+                            :j + 1
+                        ]
+                    )
+
+                    if setup:
+                        result.append(
+                            setup
+                        )
+
+                    break
+
+        # LOW SWEEP -> BUY
+        if swept_low and highs:
+
+            minor_high = highs[-1][1]
+
+            for j in range(
+                sweep_index + 1,
+                min(
+                    sweep_index + 6,
+                    end + 1
+                )
+            ):
+
+                current = df.iloc[j]
+
+                if (
+                    float(current.close)
+                    >
+                    minor_high
+                ):
+
+                    entry = next_open(
+                        df,
+                        df.index[j]
+                    )
+
+                    sl = (
+                        float(candle.low)
+                        -
+                        SWEEP_SL_PRICE
+                    )
+
+                    target = nearest_level(
+                        [
+                            x
+                            for _, x in highs
+                        ],
+                        entry,
+                        "BUY"
+                    )
+
+                    if target is None:
+                        target = (
+                            entry +
+                            2 *
+                            abs(
+                                entry -
+                                sl
+                            )
+                        )
+
+                    setup = {
+                        "strategy":
+                            "Liquidity Sweep + CHOCH",
+
+                        "direction":
+                            "BUY",
+
+                        "entry":
+                            entry,
+
+                        "sl":
+                            sl,
+
+                        "tp":
+                            target,
+
+                        "base":
+                            6,
+
+                        "atr":
+                            float(
+                                df.atr.iloc[j]
+                            ),
+
+                        "reason":
+                            (
+                                "Previous-hour low "
+                                f"swept at {fmt(previous_low)}, "
+                                "then CHOCH above "
+                                f"{fmt(minor_high)}"
+                            )
+                    }
+
+                    setup = finalize_setup(
+                        setup,
+                        df.iloc[
+                            :j + 1
+                        ]
+                    )
+
+                    if setup:
+                        result.append(
+                            setup
+                        )
+
+                    break
+
+    return result
+
+
+# ============================================================
+# 2 — RANGE BREAKOUT
+# ============================================================
+
+def range_breakout(df):
+
+    if len(df) < 80:
+        return []
+
+    result = []
+
+    end = len(df) - 1
+
+    for i in range(
+        max(24, end - 10),
+        end + 1
+    ):
+
+        window = df.iloc[
+            i - 24:i
+        ]
+
+        if len(window) < 12:
+            continue
+
+        range_high = float(
+            window.high.max()
+        )
+
+        range_low = float(
+            window.low.min()
+        )
+
+        width = (
+            range_high -
+            range_low
+        )
+
+        atr = float(
+            df.atr.iloc[i]
+        )
+
+        if (
+            width <= 0
+            or not np.isfinite(atr)
+        ):
+            continue
+
+        if (
+            width < 0.8 * atr
+            or
+            width > 4.0 * atr
+        ):
+            continue
+
+        touches_high = int(
+            (
+                window.high >=
+                range_high -
+                0.20 * atr
+            ).sum()
+        )
+
+        touches_low = int(
+            (
+                window.low <=
+                range_low +
+                0.20 * atr
+            ).sum()
+        )
+
+        if (
+            touches_high < 2
+            or
+            touches_low < 2
+        ):
+            continue
+
+        candle = df.iloc[i]
+
+        entry = next_open(
+            df,
+            df.index[i]
+        )
+
+        # BUY BREAKOUT
+        if (
+            float(candle.open)
+            > range_high
+            and
+            float(candle.close)
+            > range_high
+        ):
+
+            sl = (
+                range_high +
+                range_low
+            ) / 2
+
+            tp = (
+                entry +
+                2 *
+                (entry - sl)
+            )
+
+            setup = {
+                "strategy":
+                    "Range Breakout",
+
+                "direction":
+                    "BUY",
+
+                "entry":
+                    entry,
+
+                "sl":
+                    sl,
+
+                "tp":
+                    tp,
+
+                "base":
+                    6,
+
+                "atr":
+                    atr,
+
+                "reason":
+                    (
+                        "Range consolidation "
+                        "broke with full body "
+                        f"above {fmt(range_high)}"
+                    )
+            }
+
+            setup = finalize_setup(
+                setup,
+                df.iloc[:i + 1]
+            )
+
+            if setup:
+                result.append(setup)
+
+        # SELL BREAKOUT
+        elif (
+            float(candle.open)
+            < range_low
+            and
+            float(candle.close)
+            < range_low
+        ):
+
+            sl = (
+                range_high +
+                range_low
+            ) / 2
+
+            tp = (
+                entry -
+                2 *
+                (sl - entry)
+            )
+
+            setup = {
+                "strategy":
+                    "Range Breakout",
+
+                "direction":
+                    "SELL",
+
+                "entry":
+                    entry,
+
+                "sl":
+                    sl,
+
+                "tp":
+                    tp,
+
+                "base":
+                    6,
+
+                "atr":
+                    atr,
+
+                "reason":
+                    (
+                        "Range consolidation "
+                        "broke with full body "
+                        f"below {fmt(range_low)}"
+                    )
+            }
+
+            setup = finalize_setup(
+                setup,
+                df.iloc[:i + 1]
+            )
+
+            if setup:
+                result.append(setup)
+
+    return result
+
+
+# ============================================================
+# 3 — SUPPORT / RESISTANCE REJECTION
+# ============================================================
+
+def sr_setups(df):
+
+    if len(df) < 80:
+        return []
+
+    result = []
+
+    row = df.iloc[-1]
+
+    atr = float(
+        row.atr
+    )
+
+    if not np.isfinite(atr):
+        return []
+
+    highs, lows = local_pivots(
+        df.iloc[:-3],
+        2
+    )
+
+    levels = (
+        [x for _, x in highs[-8:]]
+        +
+        [x for _, x in lows[-8:]]
+    )
+
+    for level in levels:
+
+        distance = abs(
+            float(row.close) -
+            level
+        )
+
+        if distance > 0.35 * atr:
+            continue
+
+        # BUY rejection
+        if (
+            float(row.low)
+            <= level
+            <= float(row.close)
+            and
+            float(row.close)
+            >
+            float(row.open)
+            and
+            row.lower_wick
+            >= row.body
+        ):
+
+            sl = (
+                float(row.low)
+                -
+                0.15 * atr
+            )
+
+            tp = nearest_level(
+                levels,
+                float(row.close),
+                "BUY"
+            )
+
+            if tp is None:
+                tp = (
+                    float(row.close)
+                    +
+                    2 *
+                    (
+                        float(row.close)
+                        -
+                        sl
+                    )
+                )
+
+            setup = finalize_setup(
+                {
+                    "strategy":
+                        "S/R Rejection",
+
+                    "direction":
+                        "BUY",
+
+                    "entry":
+                        next_open(
+                            df,
+                            df.index[-1]
+                        ),
+
+                    "sl":
+                        sl,
+
+                    "tp":
+                        tp,
+
+                    "base":
+                        5,
+
+                    "atr":
+                        atr,
+
+                    "reason":
+                        (
+                            "Bullish rejection "
+                            f"at support {fmt(level)}"
+                        )
+                },
+                df
+            )
+
+            if setup:
+                result.append(
+                    setup
+                )
+
+        # SELL rejection
+        if (
+            float(row.high)
+            >= level
+            >= float(row.close)
+            and
+            float(row.close)
+            <
+            float(row.open)
+            and
+            row.upper_wick
+            >= row.body
+        ):
+
+            sl = (
+                float(row.high)
+                +
+                0.15 * atr
+            )
+
+            tp = nearest_level(
+                levels,
+                float(row.close),
+                "SELL"
+            )
+
+            if tp is None:
+                tp = (
+                    float(row.close)
+                    -
+                    2 *
+                    (
+                        sl -
+                        float(row.close)
+                    )
+                )
+
+            setup = finalize_setup(
+                {
+                    "strategy":
+                        "S/R Rejection",
+
+                    "direction":
+                        "SELL",
+
+                    "entry":
+                        next_open(
+                            df,
+                            df.index[-1]
+                        ),
+
+                    "sl":
+                        sl,
+
+                    "tp":
+                        tp,
+
+                    "base":
+                        5,
+
+                    "atr":
+                        atr,
+
+                    "reason":
+                        (
+                            "Bearish rejection "
+                            f"at resistance {fmt(level)}"
+                        )
+                },
+                df
+            )
+
+            if setup:
+                result.append(
+                    setup
+                )
+
+    return result
+
+
+# ============================================================
+# 4 — CLASSIC PATTERNS
+# ============================================================
+
+def pattern_setups(df):
+
+    if len(df) < 100:
+        return []
+
+    result = []
+
+    highs, lows = local_pivots(
+        df.iloc[:-2],
+        2
+    )
+
+    highs = highs[-8:]
+    lows = lows[-8:]
+
+    price = float(
+        df.close.iloc[-1]
+    )
+
+    atr = float(
+        df.atr.iloc[-1]
+    )
+
+    if not np.isfinite(atr):
+        return []
+
+    entry = next_open(
+        df,
+        df.index[-1]
+    )
+
+    def add_pattern(
+        name,
+        direction,
+        sl,
+        reason,
+        base=5
+    ):
+
+        if direction == "BUY":
+
+            tp = (
+                entry +
+                2 *
+                (entry - sl)
+            )
+
+        else:
+
+            tp = (
+                entry -
+                2 *
+                (sl - entry)
+            )
+
+        setup = finalize_setup(
+            {
+                "strategy":
+                    name,
+
+                "direction":
+                    direction,
+
+                "entry":
+                    entry,
+
+                "sl":
+                    sl,
+
+                "tp":
+                    tp,
+
+                "base":
+                    base,
+
+                "atr":
+                    atr,
+
+                "reason":
+                    reason
+            },
+            df
+        )
+
+        if setup:
+            result.append(
+                setup
+            )
+
+    # --------------------------------------------------------
+    # DOUBLE TOP
+    # --------------------------------------------------------
+
+    if len(highs) >= 2:
+
+        first = highs[-2][1]
+        second = highs[-1][1]
+
+        if abs(
+            first - second
+        ) <= 0.35 * atr:
+
+            between = df[
+                (
+                    df.index >
+                    highs[-2][0]
+                )
+                &
+                (
+                    df.index <
+                    highs[-1][0]
+                )
+            ]
+
+            if len(between):
+
+                neckline = float(
+                    between.low.min()
+                )
+
+                if price < neckline:
+
+                    add_pattern(
+                        "Double Top",
+                        "SELL",
+                        max(
+                            first,
+                            second
+                        ) + 0.20 * atr,
+                        (
+                            "Two similar swing highs "
+                            "with neckline break"
+                        )
+                    )
+
+    # --------------------------------------------------------
+    # DOUBLE BOTTOM
+    # --------------------------------------------------------
+
+    if len(lows) >= 2:
+
+        first = lows[-2][1]
+        second = lows[-1][1]
+
+        if abs(
+            first - second
+        ) <= 0.35 * atr:
+
+            between = df[
+                (
+                    df.index >
+                    lows[-2][0]
+                )
+                &
+                (
+                    df.index <
+                    lows[-1][0]
+                )
+            ]
+
+            if len(between):
+
+                neckline = float(
+                    between.high.max()
+                )
+
+                if price > neckline:
+
+                    add_pattern(
+                        "Double Bottom",
+                        "BUY",
+                        min(
+                            first,
+                            second
+                        ) - 0.20 * atr,
+                        (
+                            "Two similar swing lows "
+                            "with neckline break"
+                        )
+                    )
+
+    # --------------------------------------------------------
+    # TRIPLE TOP
+    # --------------------------------------------------------
+
+    if len(highs) >= 3:
+
+        values = [
+            x[1]
+            for x in highs[-3:]
+        ]
+
+        if (
+            max(values) -
+            min(values)
+            <=
+            0.45 * atr
+        ):
+
+            between = df[
+                (
+                    df.index >
+                    highs[-3][0]
+                )
+                &
+                (
+                    df.index <
+                    highs[-1][0]
+                )
+            ]
+
+            if len(between):
+
+                neckline = float(
+                    between.low.min()
+                )
+
+                if price < neckline:
+
+                    add_pattern(
+                        "Triple Top",
+                        "SELL",
+                        max(values) +
+                        0.20 * atr,
+                        (
+                            "Three clustered "
+                            "swing highs + "
+                            "neckline break"
+                        )
+                    )
+
+    # --------------------------------------------------------
+    # TRIPLE BOTTOM
+    # --------------------------------------------------------
+
+    if len(lows) >= 3:
+
+        values = [
+            x[1]
+            for x in lows[-3:]
+        ]
+
+        if (
+            max(values) -
+            min(values)
+            <=
+            0.45 * atr
+        ):
+
+            between = df[
+                (
+                    df.index >
+                    lows[-3][0]
+                )
+                &
+                (
+                    df.index <
+                    lows[-1][0]
+                )
+            ]
+
+            if len(between):
+
+                neckline = float(
+                    between.high.max()
+                )
+
+                if price > neckline:
+
+                    add_pattern(
+                        "Triple Bottom",
+                        "BUY",
+                        min(values) -
+                        0.20 * atr,
+                        (
+                            "Three clustered "
+                            "swing lows + "
+                            "neckline break"
+                        )
+                    )
+
+    # --------------------------------------------------------
+    # HEAD & SHOULDERS
+    # --------------------------------------------------------
+
+    if (
+        len(highs) >= 3
+        and
+        len(lows) >= 2
+    ):
+
+        h1, h2, h3 = [
+            x[1]
+            for x in highs[-3:]
+        ]
+
+        if (
+            h2 > h1 + 0.25 * atr
+            and
+            h2 > h3 + 0.25 * atr
+            and
+            abs(h1 - h3)
+            <= 0.55 * atr
+        ):
+
+            between = df[
+                (
+                    df.index >
+                    highs[-3][0]
+                )
+                &
+                (
+                    df.index <
+                    highs[-1][0]
+                )
+            ]
+
+            if len(between):
+
+                neckline = float(
+                    between.low.min()
+                )
+
+                if price < neckline:
+
+                    add_pattern(
+                        "Head & Shoulders",
+                        "SELL",
+                        h2 + 0.20 * atr,
+                        "H&S neckline broken"
+                    )
+
+    # --------------------------------------------------------
+    # INVERSE HEAD & SHOULDERS
+    # --------------------------------------------------------
+
+    if (
+        len(lows) >= 3
+        and
+        len(highs) >= 2
+    ):
+
+        l1, l2, l3 = [
+            x[1]
+            for x in lows[-3:]
+        ]
+
+        if (
+            l2 < l1 - 0.25 * atr
+            and
+            l2 < l3 - 0.25 * atr
+            and
+            abs(l1 - l3)
+            <= 0.55 * atr
+        ):
+
+            between = df[
+                (
+                    df.index >
+                    lows[-3][0]
+                )
+                &
+                (
+                    df.index <
+                    lows[-1][0]
+                )
+            ]
+
+            if len(between):
+
+                neckline = float(
+                    between.high.max()
+                )
+
+                if price > neckline:
+
+                    add_pattern(
+                        "Inverse H&S",
+                        "BUY",
+                        l2 - 0.20 * atr,
+                        "Inverse H&S neckline broken"
+                    )
+
+    # --------------------------------------------------------
+    # TRIANGLES
+    # --------------------------------------------------------
+
+    if (
+        len(highs) >= 3
+        and
+        len(lows) >= 3
+    ):
+
+        high_values = np.array([
+            x[1]
+            for x in highs[-3:]
+        ])
+
+        low_values = np.array([
+            x[1]
+            for x in lows[-3:]
+        ])
+
+        high_slope = np.polyfit(
+            np.arange(3),
+            high_values,
+            1
+        )[0]
+
+        low_slope = np.polyfit(
+            np.arange(3),
+            low_values,
+            1
+        )[0]
+
+        spread = abs(
+            high_values[-1] -
+            low_values[-1]
+        )
+
+        # Ascending triangle
+        if (
+            abs(high_slope)
+            < 0.15 * atr
+            and
+            low_slope
+            > 0.08 * atr
+            and
+            spread < 2.5 * atr
+            and
+            price >
+            max(high_values)
+        ):
+
+            add_pattern(
+                "Ascending Triangle",
+                "BUY",
+                min(low_values) -
+                0.20 * atr,
+                "Ascending triangle broke upward"
+            )
+
+        # Descending triangle
+        if (
+            abs(low_slope)
+            < 0.15 * atr
+            and
+            high_slope
+            < -0.08 * atr
+            and
+            spread < 2.5 * atr
+            and
+            price <
+            min(low_values)
+        ):
+
+            add_pattern(
+                "Descending Triangle",
+                "SELL",
+                max(high_values) +
+                0.20 * atr,
+                "Descending triangle broke downward"
+            )
+
+        # Rising wedge
+        if (
+            high_slope > 0
+            and
+            low_slope > 0
+            and
+            low_slope >
+            high_slope * 1.15
+            and
+            price <
+            min(low_values)
+        ):
+
+            add_pattern(
+                "Rising Wedge",
+                "SELL",
+                max(high_values) +
+                0.20 * atr,
+                "Rising wedge broke downward"
+            )
+
+        # Falling wedge
+        if (
+            high_slope < 0
+            and
+            low_slope < 0
+            and
+            abs(low_slope)
+            <
+            abs(high_slope) * 0.87
+            and
+            price >
+            max(high_values)
+        ):
+
+            add_pattern(
+                "Falling Wedge",
+                "BUY",
+                min(low_values) -
+                0.20 * atr,
+                "Falling wedge broke upward"
+            )
+
+    # --------------------------------------------------------
+    # BULL / BEAR FLAG + PENNANT
+    # --------------------------------------------------------
+
+    if len(df) >= 25:
+
+        impulse = df.iloc[
+            -25:-10
+        ]
+
+        consolidation = df.iloc[
+            -10:
+        ]
+
+        impulse_move = float(
+            impulse.close.iloc[-1] -
+            impulse.close.iloc[0]
+        )
+
+        impulse_atr = float(
+            impulse.atr.mean()
+        )
+
+        consolidation_width = float(
+            consolidation.high.max() -
+            consolidation.low.min()
+        )
+
+        if (
+            np.isfinite(impulse_atr)
+            and
+            abs(impulse_move)
+            >
+            2.0 * impulse_atr
+            and
+            consolidation_width
+            <
+            2.0 * impulse_atr
+        ):
+
+            if (
+                impulse_move > 0
+                and
+                price >
+                float(
+                    consolidation.high.max()
+                )
+            ):
+
+                add_pattern(
+                    "Bull Flag / Pennant",
+                    "BUY",
+                    float(
+                        consolidation.low.min()
+                    ) -
+                    0.15 * atr,
+                    (
+                        "Strong bullish impulse "
+                        "+ tight consolidation "
+                        "breakout"
+                    )
+                )
+
+            elif (
+                impulse_move < 0
+                and
+                price <
+                float(
+                    consolidation.low.min()
+                )
+            ):
+
+                add_pattern(
+                    "Bear Flag / Pennant",
+                    "SELL",
+                    float(
+                        consolidation.high.max()
+                    ) +
+                    0.15 * atr,
+                    (
+                        "Strong bearish impulse "
+                        "+ tight consolidation "
+                        "breakout"
+                    )
+                )
+
+    # --------------------------------------------------------
+    # RECTANGLE BREAKOUT
+    # --------------------------------------------------------
+
+    box = df.iloc[
+        -20:-2
+    ]
+
+    if len(box) >= 12:
+
+        box_high = float(
+            box.high.max()
+        )
+
+        box_low = float(
+            box.low.min()
+        )
+
+        box_width = (
+            box_high -
+            box_low
+        )
+
+        if (
+            box_width
+            <
+            2.5 * atr
+        ):
+
+            if price > box_high:
+
+                add_pattern(
+                    "Rectangle Breakout",
+                    "BUY",
+                    box_low,
+                    "Horizontal consolidation broke upward"
+                )
+
+            elif price < box_low:
+
+                add_pattern(
+                    "Rectangle Breakout",
+                    "SELL",
+                    box_high,
+                    "Horizontal consolidation broke downward"
+                )
+
+    return result
+
+
+# ============================================================
+# M5 SCANNER
+# ============================================================
+
+def scan_m5(df):
+
+    data = indicators(df)
+
+    setups = []
+
+    setups += sweep_choch(data)
+    setups += range_breakout(data)
+    setups += sr_setups(data)
+    setups += pattern_setups(data)
+
+    return [
+        x
+        for x in setups
+        if x
+        and x.get("score", 0)
+        >= MIN_SCORE
+    ]
+
+
+# ============================================================
+# M15 SCANNER
+# ============================================================
+
+def scan_m15(
+    m15,
+    m5
+):
+
+    data = indicators(m15)
+
+    setups = []
+
+    setups += range_breakout(data)
+    setups += sr_setups(data)
+    setups += pattern_setups(data)
+
+    # M5 confirms sweep + CHOCH
+    sweep_setups = sweep_choch(
+        indicators(m5)
+    )
+
+    for setup in sweep_setups:
+        setup["tf"] = "M15"
+
+    setups += sweep_setups
+
+    for setup in setups:
+        setup["tf"] = setup.get(
+            "tf",
+            "M15"
+        )
+
+    return [
+        x
+        for x in setups
+        if x
+        and x.get("score", 0)
+        >= MIN_SCORE
+    ]
+
+
+# ============================================================
+# EARLY EXIT
+# ============================================================
+
+def reversal_reasons(
+    df,
+    trade
+):
+
+    if len(df) < 60:
+        return []
+
+    row = df.iloc[-1]
+
+    reasons = []
+
+    direction = trade[
+        "direction"
+    ]
+
+    body = float(
+        row.body
+    )
+
+    atr = float(
+        row.atr
+    )
+
+    if not np.isfinite(atr):
+        return reasons
+
+    highs, lows = local_pivots(
+        df.iloc[:-2],
+        2
+    )
+
+    if direction == "BUY":
+
+        if (
+            lows
+            and
+            float(row.close)
+            <
+            lows[-1][1]
+        ):
+
+            reasons.append(
+                "M5 structure broke down"
+            )
+
+        if (
+            row.close < row.open
+            and
+            body >= 0.75 * atr
+            and
+            row.close
+            <=
+            row.low +
+            0.30 * row.range
+        ):
+
+            reasons.append(
+                "strong bearish candle"
+            )
+
+        if (
+            np.isfinite(row.rsi)
+            and
+            row.rsi < 43
+        ):
+
+            reasons.append(
+                "RSI weakness"
+            )
+
+        if (
+            row.close <
+            row.ema20
+        ):
+
+            reasons.append(
+                "price lost EMA20"
+            )
+
+    else:
+
+        if (
+            highs
+            and
+            float(row.close)
+            >
+            highs[-1][1]
+        ):
+
+            reasons.append(
+                "M5 structure broke up"
+            )
+
+        if (
+            row.close > row.open
+            and
+            body >= 0.75 * atr
+            and
+            row.close
+            >=
+            row.low +
+            0.70 * row.range
+        ):
+
+            reasons.append(
+                "strong bullish candle"
+            )
+
+        if (
+            np.isfinite(row.rsi)
+            and
+            row.rsi > 57
+        ):
+
+            reasons.append(
+                "RSI strength"
+            )
+
+        if (
+            row.close >
+            row.ema20
+        ):
+
+            reasons.append(
+                "price regained EMA20"
+            )
+
+    return reasons
+
+
+# ============================================================
+# MONITOR OPEN TRADE
+# ============================================================
+
+def monitor_open(
+    state,
+    m5
+):
+
+    if not state["open"]:
+        return False
+
+    df = indicators(m5)
+
+    live = float(
+        m5.close.iloc[-1]
+    )
+
+    changed = False
+
+    for symbol, trade in list(
+        state["open"].items()
+    ):
+
+        if symbol != SYMBOL:
+            continue
+
+        direction = trade[
+            "direction"
+        ]
+
+        entry = float(
+            trade["entry"]
+        )
+
+        sl = float(
+            trade["sl"]
+        )
+
+        tp = float(
+            trade["tp"]
+        )
+
+        last = m5.iloc[-1]
+
+        hit = None
+        exit_price = None
+
+        # ----------------------------------------------------
+        # TP / SL
+        # ----------------------------------------------------
+
+        # If both happen inside same candle,
+        # SL gets priority conservatively.
+
+        if direction == "BUY":
+
+            if float(last.low) <= sl:
+
+                hit = "SL"
+                exit_price = sl
+
+            elif float(last.high) >= tp:
+
+                hit = "TP"
+                exit_price = tp
+
+        else:
+
+            if float(last.high) >= sl:
+
+                hit = "SL"
+                exit_price = sl
+
+            elif float(last.low) <= tp:
+
+                hit = "TP"
+                exit_price = tp
+
+        # ----------------------------------------------------
+        # EXPIRY
+        # ----------------------------------------------------
+
+        opened = pd.to_datetime(
+            trade["opened_at"]
+        )
+
+        age_hours = (
+            pd.Timestamp.now() -
+            opened
+        ).total_seconds() / 3600
+
+        if (
+            hit is None
+            and
+            EXPIRE_HOURS > 0
+            and
+            age_hours >= EXPIRE_HOURS
+        ):
+
+            hit = "EXPIRY"
+            exit_price = live
+
+        # ----------------------------------------------------
+        # EARLY EXIT
+        # ----------------------------------------------------
+
+        if (
+            hit is None
+            and
+            not trade.get(
+                "early_exit_sent"
+            )
+        ):
+
+            reasons = reversal_reasons(
+                df,
+                trade
+            )
+
+            if direction == "BUY":
+
+                r = (
+                    live - entry
+                ) / (
+                    entry - sl
+                )
+
+            else:
+
+                r = (
+                    entry - live
+                ) / (
+                    sl - entry
+                )
+
+            required_reasons = (
+                2
+                if r > 0.25
+                else 3
+            )
+
+            if len(reasons) >= required_reasons:
+
+                tg(
+                    "⚠️ EARLY EXIT\n"
+                    f"{SYMBOL}\n"
+                    f"{direction}\n"
+                    f"Entry: {fmt(entry)}\n"
+                    f"Current: {fmt(live)}\n"
+                    f"R: {r:.2f}\n"
+                    "Reasons: "
+                    +
+                    ", ".join(reasons)
+                    +
+                    "\n"
+                    "البوت يعتبر الصفقة مغلقة "
+                    "داخلياً بسبب انعكاس قوي."
+                )
+
+                hit = "EARLY_EXIT"
+                exit_price = live
+
+        # ----------------------------------------------------
+        # CLOSE
+        # ----------------------------------------------------
+
+        if hit:
+
+            if direction == "BUY":
+
+                pnl = (
+                    exit_price -
+                    entry
+                )
+
+            else:
+
+                pnl = (
+                    entry -
+                    exit_price
+                )
+
+            stats = day_stats(
+                state
+            )
+
+            if (
+                hit == "TP"
+                or
+                (
+                    hit == "EARLY_EXIT"
+                    and
+                    pnl > 0
+                )
+            ):
+
+                stats["wins"] += 1
+                result = "WIN"
+
+            elif (
+                hit == "SL"
+                or
+                (
+                    hit == "EARLY_EXIT"
+                    and
+                    pnl <= 0
+                )
+            ):
+
+                stats["losses"] += 1
+                result = "LOSS"
+
+            else:
+
+                stats["neutral"] += 1
+                result = "NEUTRAL"
+
+            if result == "WIN":
+                emoji = "🟢"
+            elif result == "LOSS":
+                emoji = "🔴"
+            else:
+                emoji = "⚪"
+
+            tg(
+                f"{emoji} {result}\n"
+                f"{SYMBOL}\n"
+                f"{direction} | "
+                f"{trade.get('tf', 'M5')}\n"
+                f"Exit: {hit}\n"
+                f"Entry: {fmt(entry)}\n"
+                f"Exit price: {fmt(exit_price)}\n"
+                f"Move: {pnl:+.2f}"
+            )
+
+            del state["open"][symbol]
+
+            changed = True
+
+        # ----------------------------------------------------
+        # BREAK EVEN ALERT
+        # ----------------------------------------------------
+
+        elif not trade.get(
+            "be_alerted"
+        ):
+
+            risk = abs(
+                entry - sl
+            )
+
+            favorable = (
+                live - entry
+                if direction == "BUY"
+                else
+                entry - live
+            )
+
+            if favorable >= risk:
+
+                trade["be_alerted"] = True
+
+                tg(
+                    "🟡 BREAK-EVEN ALERT\n"
+                    f"{SYMBOL}\n"
+                    f"{direction}\n"
+                    f"Price: {fmt(live)}\n"
+                    "الصفقة حققت +1R. "
+                    "إذا الصفقة منفذة يدوياً، "
+                    "انقل الستوب للدخول."
+                )
+
+                changed = True
+
+    return changed
+
+
+# ============================================================
+# BEST SETUP
+# ============================================================
+
+def best_setup(
+    setups
+):
+
+    if not setups:
+        return None
+
+    return sorted(
+        setups,
+        key=lambda x: (
+            x.get("score", 0),
+            x.get("rr", 0),
+            x.get("signal_time", "")
+        ),
+        reverse=True
+    )[0]
+
+
+# ============================================================
+# SIGNAL MESSAGE
+# ============================================================
+
+def signal_text(
+    setup
+):
+
+    emoji = (
+        "🟢"
+        if setup["direction"] == "BUY"
+        else
+        "🔴"
+    )
+
+    if setup["score"] >= 9:
+        grade = "EXCELLENT"
+
+    elif setup["score"] >= 7:
+        grade = "GOOD"
+
+    else:
+        grade = "MEDIUM"
+
+    return (
+        f"{emoji} XAU/USD SIGNAL\n"
+        f"{setup['direction']} | "
+        f"{setup.get('tf', 'M5')} | "
+        f"{grade} "
+        f"{setup['score']}/10\n"
+        f"Strategy: "
+        f"{setup['strategy']}\n"
+        f"Entry: "
+        f"{fmt(setup['entry'])}\n"
+        f"SL: "
+        f"{fmt(setup['sl'])}\n"
+        f"TP: "
+        f"{fmt(setup['tp'])}\n"
+        f"RR: "
+        f"1:{setup['rr']:.2f}\n"
+        f"Reason: "
+        f"{setup['reason']}\n"
+        f"Time: "
+        f"{setup['signal_time']}"
     )
 
 
-# =========================================================
+# ============================================================
+# MAIN
+# ============================================================
+
+def main():
+
+    state = load_state()
+
+    # ========================================================
+    # TELEGRAM TEST FIRST
+    # ========================================================
+
+    if TEST_MSG:
+
+        telegram_ok = telegram_check()
+
+        if telegram_ok:
+
+            tg(
+                "🧪 TEST OK\n"
+                "XAU/USD bot Telegram connection "
+                "is working."
+            )
+
+        else:
+
+            tg(
+                "❌ TEST FAILED\n"
+                "Telegram credentials or chat ID "
+                "need checking."
+            )
+
+        # Telegram test does NOT depend on Twelve Data
+        if not TD_KEY:
+            return
+
+    # ========================================================
+    # FETCH M5
+    # ========================================================
+
+    try:
+
+        raw = fetch(
+            SYMBOL,
+            "5min",
+            900
+        )
+
+    except Exception as error:
+
+        tg(
+            "❌ DATA ERROR — XAU/USD\n"
+            f"{error}"
+        )
+
+        return
+
+    m5 = clean_completed(
+        raw,
+        5
+    )
+
+    if len(m5) < 150:
+
+        tg(
+            "❌ DATA ERROR\n"
+            "Not enough completed M5 candles."
+        )
+
+        return
+
+    m5 = indicators(
+        m5
+    )
+
+    # ========================================================
+    # BUILD M15
+    # ========================================================
+
+    m15_all = resample(
+        raw,
+        "15min"
+    )
+
+    m15 = clean_completed(
+        m15_all,
+        15
+    )
+
+    if len(m15) < 100:
+
+        tg(
+            "❌ DATA ERROR\n"
+            "Not enough completed M15 candles."
+        )
+
+        return
+
+    m15 = indicators(
+        m15
+    )
+
+    # ========================================================
+    # STARTUP MESSAGE
+    # ========================================================
+
+    today = day_key()
+
+    if (
+        STARTUP_MSG
+        and
+        state.get("last_startup")
+        != today
+    ):
+
+        telegram_ok = bool(
+            TG_TOKEN
+            and
+            TG_CHAT
+            and
+            telegram_check()
+        )
+
+        tg(
+            "🟢 BOT RUNNING — XAU/USD\n"
+            "M5 + M15: ACTIVE\n"
+            f"Telegram: "
+            f"{'OK' if telegram_ok else 'ERROR'}\n"
+            "Data: OK\n"
+            f"UTC: "
+            f"{datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M')}"
+        )
+
+        state[
+            "last_startup"
+        ] = today
+
+    # ========================================================
+    # MONITOR CURRENT TRADE
+    # ========================================================
+
+    monitor_open(
+        state,
+        m5
+    )
+
+    save_state(
+        state
+    )
+
+    # ========================================================
+    # ONE OPEN TRADE ONLY
+    # ========================================================
+
+    if state["open"]:
+
+        return
+
+    # ========================================================
+    # DAILY LIMITS
+    # ========================================================
+
+    stats = day_stats(
+        state
+    )
+
+    if (
+        stats["trades"]
+        >=
+        MAX_PER_DAY
+    ):
+
+        save_state(
+            state
+        )
+
+        return
+
+    if (
+        stats["losses"]
+        >=
+        MAX_LOSSES
+    ):
+
+        save_state(
+            state
+        )
+
+        return
+
+    # ========================================================
+    # SCAN BOTH TIMEFRAMES
+    # ========================================================
+
+    setups = []
+
+    setups += scan_m5(
+        m5
+    )
+
+    setups += scan_m15(
+        m15,
+        m5
+    )
+
+    if not setups:
+
+        save_state(
+            state
+        )
+
+        return
+
+    # ========================================================
+    # BEST QUALITY SETUP
+    # ========================================================
+
+    setup = best_setup(
+        setups
+    )
+
+    if not setup:
+        return
+
+    # ========================================================
+    # DUPLICATE PROTECTION
+    # ========================================================
+
+    signal_key = (
+        f"{SYMBOL}|"
+        f"{setup.get('tf', 'M5')}|"
+        f"{setup['strategy']}|"
+        f"{setup['direction']}|"
+        f"{setup['signal_time']}"
+    )
+
+    if state[
+        "last_signals"
+    ].get(signal_key):
+
+        return
+
+    # ========================================================
+    # DON'T SEND OLD SIGNALS
+    # ========================================================
+
+    signal_time = pd.to_datetime(
+        setup["signal_time"]
+    )
+
+    signal_age = (
+        pd.Timestamp.now() -
+        signal_time
+    ).total_seconds()
+
+    if signal_age > 20 * 60:
+
+        return
+
+    # ========================================================
+    # SEND SIGNAL
+    # ========================================================
+
+    tg(
+        signal_text(
+            setup
+        )
+    )
+
+    # ========================================================
+    # SAVE TRADE
+    # ========================================================
+
+    stats["trades"] += 1
+
+    state[
+        "last_signals"
+    ][signal_key] = (
+        datetime.now(
+            timezone.utc
+        ).isoformat()
+    )
+
+    state["open"][SYMBOL] = {
+
+        "direction":
+            setup["direction"],
+
+        "entry":
+            setup["entry"],
+
+        "sl":
+            setup["sl"],
+
+        "tp":
+            setup["tp"],
+
+        "tf":
+            setup.get(
+                "tf",
+                "M5"
+            ),
+
+        "strategy":
+            setup["strategy"],
+
+        "opened_at":
+            datetime.now(
+                timezone.utc
+            ).isoformat(),
+
+        "be_alerted":
+            False,
+
+        "early_exit_sent":
+            False,
+
+        "score":
+            setup["score"]
+    }
+
+    save_state(
+        state
+    )
+
+
+# ============================================================
 # RUN
-# =========================================================
+# ============================================================
 
 if __name__ == "__main__":
 
-    main()
+    try:
+
+        main()
+
+    except Exception as error:
+
+        print(
+            "FATAL:",
+            repr(error)
+        )
+
+        try:
+
+            tg(
+                "🚨 BOT FATAL ERROR\n"
+                f"{type(error).__name__}: "
+                f"{error}"
+            )
+
+        except Exception:
+            pass
+
+        sys.exit(1)
