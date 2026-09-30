@@ -2,7 +2,7 @@ name: trading-bot
 
 on:
   schedule:
-    - cron: "2,17,32,47 6-21 * * 1-5"
+    - cron: "*/5 6-21 * * 1-5"
   workflow_dispatch:
     inputs:
       test:
@@ -39,5 +39,11 @@ jobs:
         run: |
           git config user.name "bot"
           git config user.email "bot@users.noreply.github.com"
-          if [ -f state.json ]; then git add state.json; fi
-          git diff --cached --quiet || (git commit -m "state" && git pull --rebase && git push)
+          if [ -f state.json ]; then
+            cp state.json /tmp/state.json
+            git fetch origin main
+            git reset --hard origin/main
+            cp /tmp/state.json state.json
+            git add state.json
+            git diff --cached --quiet || (git commit -m "state" && git push)
+          fi
