@@ -36,25 +36,7 @@ jobs:
           TEST_MSG: ${{ github.event.inputs.test }}
         run: python bot.py
       - name: Save state
-        run: |
-          if [ -f state.json ]; then
-            git config user.name "github-actions[bot]"
-            git config user.email "github-actions[bot]@users.noreply.github.com"
-            
-            # 1. حفظ النسخة الجديدة من الملف في المجلد المؤقت
-            cp state.json /tmp/state.json
-            
-            # 2. جلب أحدث كود وتصفير أي تعارضات محلية
-            git fetch origin main
-            git reset --hard origin/main
-            
-            # 3. إعادة ملف النسخة الجديدة فوق أحدث كود
-            cp /tmp/state.json state.json
-            
-            # 4. الرفع المباشر
-            git add state.json
-            if ! git diff --cached --quiet; then
-              git commit -m "Update state [skip ci]"
-              git push origin main
-            fi
-          fi
+        uses: stefanzweifel/git-auto-commit-action@v5
+        with:
+          commit_message: "Update state [skip ci]"
+          file_pattern: 'state.json'
