@@ -692,7 +692,7 @@ def check_open(st, m5s, frames, now, day):
             day["r"] -= 1
             tg(f"❌ ضرب الستوب\n{sym} ({side}) - {t['name']}\nالستوب {t['sl']:.5g}\nالبوت رجع يدوّر على Setup جديد.")
         elif res == "EXPIRED":
-            tg(f"⌛ انتهت الصفقة بدون نتيجة بعد {EXPIRE_BY_TF.get(t["tf"], EXPIRE_HOURS):.1f} ساعات\n{sym} ({side}) - {t['name']}\nالبوت رجع يدوّر على Setup جديد.")
+            tg(f"⌛ انتهت الصفقة بدون نتيجة بعد {EXPIRE_BY_TF.get(t['tf'], EXPIRE_HOURS):.1f} ساعات\n{sym} ({side}) - {t['name']}\nالبوت رجع يدور على Setup جديد.")
         else:
             fr = frames.get(sym, {}).get(t["tf"])
             reasons = []
