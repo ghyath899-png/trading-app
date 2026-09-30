@@ -1,4 +1,7 @@
-"""بوت XAU/USD على GitHub Actions: سكان M5+M15، صفقة واحدة، إدارة صفقة وخروج مبكر عند انعكاس قوي"""
+"""
+بوت تداول XAU/USD ومؤشرات/عملات على GitHub Actions
+مسح الفريمات M5 و M15، إدارة صفقة تلقائية، خروج مبكر عند الانعكاس القوي، ونبض متابعة.
+"""
 import os
 import sys
 import json
@@ -17,17 +20,17 @@ TD_KEY = env("TWELVE_DATA_API_KEY")
 TG_TOKEN = env("TELEGRAM_BOT_TOKEN")
 TG_CHAT = env("TELEGRAM_CHAT_ID")
 SYMBOLS = [s.strip() for s in env("SYMBOLS", "XAU/USD").split(",") if s.strip()]
-MIN_SCORE = float(env("MIN_SCORE", "5"))       # أقل نقاط للإشارة على M15 (وM5 بيحتاج +1)
-RR = float(env("RR", "1.5"))                   # نسبة الهدف الأول للمخاطرة
-MAX_PER_DAY = int(env("MAX_PER_DAY", "5"))     # أقصى عدد إشارات باليوم
-MAX_LOSSES = int(env("MAX_LOSSES", "3"))       # بعد هالعدد من الخسائر بيوقف لباقي اليوم
-COOLDOWN_MIN = int(env("COOLDOWN_MIN", "20"))  # أقل فاصل بين إشارتين لنفس الأداة
-EXPIRE_HOURS = float(env("EXPIRE_HOURS", "4"))  # بدون نتيجة بعد هالمدة بتنسكّر الصفقة
-HEARTBEAT_HOURS = float(env("HEARTBEAT_HOURS", "4"))  # إذا ما وصلت رسائل، بيبعت "البوت شغال" مع قراءة السوق
+MIN_SCORE = float(env("MIN_SCORE", "5"))          # أقل نقاط للإشارة على M15 (وM5 بيحتاج +1)
+RR = float(env("RR", "1.5"))                      # نسبة الهدف الأول للمخاطرة
+MAX_PER_DAY = int(env("MAX_PER_DAY", "5"))        # أقصى عدد إشارات باليوم
+MAX_LOSSES = int(env("MAX_LOSSES", "3"))          # بعد هالعدد من الخسائر بيوقف لباقي اليوم
+COOLDOWN_MIN = int(env("COOLDOWN_MIN", "20"))     # أقل فاصل بين إشارتين لنفس الأداة
+EXPIRE_HOURS = float(env("EXPIRE_HOURS", "4"))     # بدون نتيجة بعد هالمدة بتنسكّر الصفقة
+HEARTBEAT_HOURS = float(env("HEARTBEAT_HOURS", "4")) # إذا ما وصلت رسائل، بيبعت "البوت شغال" مع قراءة السوق
 PIPS = {"XAU/USD": 0.1, "GBP/JPY": 0.01, "USD/JPY": 0.01, "EUR/USD": 0.0001,
         "GBP/USD": 0.0001, "BTC/USD": 1.0, "NDX": 1.0}
-EXCELLENT_SCORE = float(env("EXCELLENT_SCORE", "9"))  # تقييم ممتازة
-GOOD_SCORE = float(env("GOOD_SCORE", "7"))            # تقييم جيدة (وأقل منها متوسطة)
+EXCELLENT_SCORE = float(env("EXCELLENT_SCORE", "9")) # تقييم ممتازة
+GOOD_SCORE = float(env("GOOD_SCORE", "7"))           # تقييم جيدة
 STATE_FILE = "state.json"
 
 
@@ -38,7 +41,7 @@ def prep(df):
     ch = d["Close"].diff()
     up = ch.clip(lower=0).ewm(alpha=1 / 14, adjust=False).mean()
     dn = (-ch.clip(upper=0)).ewm(alpha=1 / 14, adjust=False).mean()
-    d["RSI"] = 100 - 100 / (1 + up / dn)
+    d["RSI"] = 100 - 100 / (1 + up / dn.replace(0, 1e-9))
     tr = pd.concat([d["High"] - d["Low"], (d["High"] - d["Close"].shift()).abs(),
                     (d["Low"] - d["Close"].shift()).abs()], axis=1).max(axis=1)
     d["ATR"] = tr.ewm(alpha=1 / 14, adjust=False).mean()
@@ -127,7 +130,151 @@ def order_block(d):
     return None
 
 
-# ---------------- الاستراتيجيات ----------------
+def extra_setups(d, price, atr, H, L, tr):
+    out = []
+    n = len(d)
+    hi, lo, cl, op = (d[c].values for c in ("High", "Low", "Close", "Open"))
+
+    def add(name, dr, sl, base, why):
+        out.append({"name": name, "dir": dr, "sl": float(sl), "score": base, "why": why})
+
+    g = lambda x: f"{x:.5g}"
+
+    done = set()
+    for i in range(max(n - 12, 8), n - 1):
+        for hidx, lv in H[-4:]:
+            if 1 in done:
+                break
+            if hidx < i and hi[i] > lv and cl[i] < lv:
+                level = lo[i - 6:i].min()
+                ks = [k for k in range(i + 1, n) if cl[k] < level]
+                if ks and ks[0] >= n - 3 and price <= level + 0.3 * atr and level - price <= 2 * atr:
+                    add("Sweep + CHOCH بيع", -1, hi[i:].max() + 0.2 * atr, 4,
+                        f"سحب سيولة فوق {g(lv)} ثم كسر هيكل هابط تحت {g(level)}")
+                    done.add(1)
+        for lidx, lv in L[-4:]:
+            if 2 in done:
+                break
+            if lidx < i and lo[i] < lv and cl[i] > lv:
+                level = hi[i - 6:i].max()
+                ks = [k for k in range(i + 1, n) if cl[k] > level]
+                if ks and ks[0] >= n - 3 and price >= level - 0.3 * atr and price - level <= 2 * atr:
+                    add("Sweep + CHOCH شراء", 1, lo[i:].min() - 0.2 * atr, 4,
+                        f"سحب سيولة تحت {g(lv)} ثم كسر هيكل صاعد فوق {g(level)}")
+                    done.add(2)
+
+    if len(H) >= 2 and len(L) >= 1 and H[-2][1] > H[-1][1]:
+        lv = H[-1][1]
+        if cl[-1] > lv and cl[-4:-1].min() <= lv and cl[-1] - lv <= 1.5 * atr:
+            add("CHOCH صاعد", 1, L[-1][1] - 0.2 * atr, 2, f"كسر آخر قمة هابطة {g(lv)} (تغير طبيعة السوق)")
+    if len(L) >= 2 and len(H) >= 1 and L[-2][1] < L[-1][1]:
+        lv = L[-1][1]
+        if cl[-1] < lv and cl[-4:-1].max() >= lv and lv - cl[-1] <= 1.5 * atr:
+            add("CHOCH هابط", -1, H[-1][1] + 0.2 * atr, 2, f"كسر آخر قاع صاعد {g(lv)} (تغير طبيعة السوق)")
+
+    W = 20
+    if n > W + 4:
+        seg = slice(n - W - 2, n - 2)
+        rh, rl = hi[seg].max(), lo[seg].min()
+        if 0.8 * atr <= rh - rl <= 3.5 * atr:
+            body, mid = abs(cl[-1] - op[-1]), (rh + rl) / 2
+            if cl[-1] > rh + 0.1 * atr and cl[-2] <= rh + 0.1 * atr and body >= 0.5 * atr:
+                add("Range Breakout صاعد", 1, mid - 0.2 * atr, 3, f"كسر رينج [{g(rl)}-{g(rh)}] لأعلى")
+            if cl[-1] < rl - 0.1 * atr and cl[-2] >= rl - 0.1 * atr and body >= 0.5 * atr:
+                add("Range Breakout هابط", -1, mid + 0.2 * atr, 3, f"كسر رينج [{g(rl)}-{g(rh)}] لأسفل")
+
+    if len(H) >= 2:
+        (i1, p1), (i2, p2) = H[-2], H[-1]
+        if i2 - i1 >= 8 and abs(p1 - p2) <= 0.35 * atr and n - 1 - i2 <= 30:
+            neck = lo[i1:i2 + 1].min()
+            if cl[-1] < neck and cl[-2] >= neck:
+                add("Double Top", -1, max(p1, p2) + 0.2 * atr, 3, f"قمة مزدوجة ~{g(p2)} وكسر العنق {g(neck)}")
+    if len(L) >= 2:
+        (i1, p1), (i2, p2) = L[-2], L[-1]
+        if i2 - i1 >= 8 and abs(p1 - p2) <= 0.35 * atr and n - 1 - i2 <= 30:
+            neck = hi[i1:i2 + 1].max()
+            if cl[-1] > neck and cl[-2] <= neck:
+                add("Double Bottom", 1, min(p1, p2) - 0.2 * atr, 3, f"قاع مزدوج ~{g(p2)} وكسر العنق {g(neck)}")
+
+    if len(H) >= 3:
+        (i1, p1), (i2, p2), (i3, p3) = H[-3:]
+        if p2 > max(p1, p3) + 0.5 * atr and abs(p1 - p3) <= 0.8 * atr and i3 - i1 <= 80 and n - 1 - i3 <= 30:
+            neck = (lo[i1:i2 + 1].min() + lo[i2:i3 + 1].min()) / 2
+            if cl[-1] < neck and cl[-2] >= neck:
+                add("Head & Shoulders", -1, p3 + 0.2 * atr, 3, f"رأس وكتفين وكسر العنق {g(neck)}")
+    if len(L) >= 3:
+        (i1, p1), (i2, p2), (i3, p3) = L[-3:]
+        if p2 < min(p1, p3) - 0.5 * atr and abs(p1 - p3) <= 0.8 * atr and i3 - i1 <= 80 and n - 1 - i3 <= 30:
+            neck = (hi[i1:i2 + 1].max() + hi[i2:i3 + 1].max()) / 2
+            if cl[-1] > neck and cl[-2] <= neck:
+                add("Inverse H&S", 1, p3 - 0.2 * atr, 3, f"رأس وكتفين مقلوب وكسر العنق {g(neck)}")
+
+    if len(H) >= 2 and len(L) >= 2:
+        (a1, b1), (a2, b2) = H[-2], H[-1]
+        (c1, d1), (c2, d2) = L[-2], L[-1]
+        if a2 - a1 >= 6 and c2 - c1 >= 6 and max(a2, c2) - min(a1, c1) <= 100:
+            su, sw = (b2 - b1) / (a2 - a1), (d2 - d1) / (c2 - c1)
+            up = lambda x: b2 + su * (x - a2)
+            lw = lambda x: d2 + sw * (x - c2)
+            x0 = min(a1, c1)
+            w0, wn = up(x0) - lw(x0), up(n - 1) - lw(n - 1)
+            conv = wn < 0.85 * w0 and wn > 0.5 * atr and su <= 0.03 * atr and sw >= -0.03 * atr
+            par = abs(su - sw) < 0.04 * atr and w0 > 0.8 * atr and wn > 0.8 * atr
+            if conv or par:
+                nm = "قناة سعرية"
+                if conv:
+                    nm = ("مثلث صاعد" if abs(su) <= 0.03 * atr and sw > 0.03 * atr else
+                          "مثلث هابط" if abs(sw) <= 0.03 * atr and su < -0.03 * atr else "مثلث متماثل")
+                mid = (up(n - 1) + lw(n - 1)) / 2
+                base = 3 if conv else 2
+                if cl[-1] > up(n - 1) + 0.1 * atr and cl[-2] <= up(n - 2) + 0.1 * atr:
+                    add(f"كسر {nm} لأعلى", 1, mid - 0.2 * atr, base, f"كسر خط {nm} العلوي")
+                if cl[-1] < lw(n - 1) - 0.1 * atr and cl[-2] >= lw(n - 2) - 0.1 * atr:
+                    add(f"كسر {nm} لأسفل", -1, mid + 0.2 * atr, base, f"كسر خط {nm} السفلي")
+
+    if len(H) >= 2 and len(L) >= 2:
+        (a1, b1), (a2, b2) = H[-2], H[-1]
+        (c1, e1), (c2, e2) = L[-2], L[-1]
+        if a2 - a1 >= 6 and c2 - c1 >= 6 and max(a2, c2) - min(a1, c1) <= 100:
+            su, sw = (b2 - b1) / (a2 - a1), (e2 - e1) / (c2 - c1)
+            up = lambda x: b2 + su * (x - a2)
+            lw = lambda x: e2 + sw * (x - c2)
+            x0 = min(a1, c1)
+            w0, wn = up(x0) - lw(x0), up(n - 1) - lw(n - 1)
+            if wn < 0.85 * w0 and wn > 0.5 * atr:
+                if su > 0.01 * atr and sw > su * 1.15 and cl[-1] < lw(n - 1) - 0.1 * atr and cl[-2] >= lw(n - 2) - 0.1 * atr:
+                    add("Rising Wedge", -1, up(n - 1) + 0.2 * atr, 3, "كسر وتد صاعد لأسفل")
+                if su < -0.01 * atr and sw < 0 and abs(sw) < abs(su) * 0.87 and cl[-1] > up(n - 1) + 0.1 * atr and cl[-2] <= up(n - 2) + 0.1 * atr:
+                    add("Falling Wedge", 1, lw(n - 1) - 0.2 * atr, 3, "كسر وتد هابط لأعلى")
+
+    if len(H) >= 3:
+        vals = [p_ for _, p_ in H[-3:]]
+        i1, i3 = H[-3][0], H[-1][0]
+        if max(vals) - min(vals) <= 0.45 * atr and i3 - i1 >= 12 and n - 1 - i3 <= 40:
+            neck = lo[i1:i3 + 1].min()
+            if cl[-1] < neck and cl[-2] >= neck:
+                add("Triple Top", -1, max(vals) + 0.2 * atr, 3, f"قمة ثلاثية ~{g(vals[-1])} وكسر العنق {g(neck)}")
+    if len(L) >= 3:
+        vals = [p_ for _, p_ in L[-3:]]
+        i1, i3 = L[-3][0], L[-1][0]
+        if max(vals) - min(vals) <= 0.45 * atr and i3 - i1 >= 12 and n - 1 - i3 <= 40:
+            neck = hi[i1:i3 + 1].max()
+            if cl[-1] > neck and cl[-2] <= neck:
+                add("Triple Bottom", 1, min(vals) - 0.2 * atr, 3, f"قاع ثلاثي ~{g(vals[-1])} وكسر العنق {g(neck)}")
+
+    if n >= 30:
+        seg = d.iloc[-26:-11]
+        move = float(seg["Close"].iloc[-1] - seg["Close"].iloc[0])
+        aa = float(seg["ATR"].mean())
+        top, bot_ = float(hi[-11:-1].max()), float(lo[-11:-1].min())
+        if abs(move) > 2.0 * aa and (top - bot_) < 2.0 * aa:
+            if move > 0 and cl[-1] > top and cl[-2] <= top:
+                add("Bull Flag/Pennant", 1, bot_ - 0.15 * atr, 3, "اندفاع صاعد + تماسك ضيق ثم كسر لأعلى")
+            elif move < 0 and cl[-1] < bot_ and cl[-2] >= bot_:
+                add("Bear Flag/Pennant", -1, top + 0.15 * atr, 3, "اندفاع هابط + تماسك ضيق ثم كسر لأسفل")
+    return out
+
+
 def scan(df, b4, b1d, crypto, levels=None):
     d = prep(df)
     last = d.iloc[-1]
@@ -145,13 +292,11 @@ def scan(df, b4, b1d, crypto, levels=None):
     swl = L[-1][1] if L else price - 2 * atr
     swh = H[-1][1] if H else price + 2 * atr
 
-    # 1) ارتداد من EMA50 مع الاتجاه
     if tr == 1 and abs(price - ema50) <= 0.6 * atr and rsi < 60 and price > ema200:
         add("ارتداد EMA50 مع الاتجاه", 1, min(swl, price - 1.2 * atr) - 0.2 * atr, 3, "اتجاه صاعد وتراجع للمتوسط 50")
     if tr == -1 and abs(price - ema50) <= 0.6 * atr and rsi > 40 and price < ema200:
         add("ارتداد EMA50 مع الاتجاه", -1, max(swh, price + 1.2 * atr) + 0.2 * atr, 3, "اتجاه هابط وصعود للمتوسط 50")
 
-    # 2) ارتداد من دعم/مقاومة مع شمعة رفض
     for z in zones:
         base = 2 + (1 if z["n"] >= 3 else 0)
         if bull and z["lo"] - 0.3 * atr <= price <= z["hi"] + 0.5 * atr:
@@ -159,7 +304,6 @@ def scan(df, b4, b1d, crypto, levels=None):
         if bear and z["lo"] - 0.5 * atr <= price <= z["hi"] + 0.3 * atr:
             add("ارتداد من مقاومة", -1, z["hi"] + 0.3 * atr, base, f"مقاومة لمست {z['n']} مرات + شمعة رفض هابطة")
 
-    # 3) سحب سيولة (Liquidity Sweep)
     rh, rl = float(d["High"].iloc[-3:].max()), float(d["Low"].iloc[-3:].min())
     for _, lv in H[-3:]:
         if rh > lv > price:
@@ -170,14 +314,12 @@ def scan(df, b4, b1d, crypto, levels=None):
             add("سحب سيولة قاع", 1, rl - 0.2 * atr, 3, f"اختراق كاذب تحت {lv:.2f} وإغلاق فوقه")
             break
 
-    # 4) إعادة اختبار FVG
     for dr, (lo, hi) in fvgs(d):
         if dr == 1 and tr >= 0 and lo - 0.2 * atr <= price <= hi:
             add("إعادة اختبار FVG صاعدة", 1, lo - 0.3 * atr, 2, f"السعر داخل فجوة [{lo:.2f}-{hi:.2f}]")
         if dr == -1 and tr <= 0 and lo <= price <= hi + 0.2 * atr:
             add("إعادة اختبار FVG هابطة", -1, hi + 0.3 * atr, 2, f"السعر داخل فجوة [{lo:.2f}-{hi:.2f}]")
 
-    # 5) كسر وإعادة اختبار
     n = len(d)
     for i, lv in H[-3:]:
         if i < n - 12 and (d["Close"].iloc[-12:-1] > lv).any() and lv - 0.2 * atr <= price <= lv + 0.5 * atr:
@@ -188,7 +330,6 @@ def scan(df, b4, b1d, crypto, levels=None):
             add("كسر وإعادة اختبار", -1, lv + 0.8 * atr, 2, f"كسر {lv:.2f} وعودة لاختباره")
             break
 
-    # 6) فيبوناتشي 0.5 - 0.786
     if H and L:
         (iH, pH), (iL, pL) = H[-1], L[-1]
         leg = abs(pH - pL)
@@ -202,14 +343,12 @@ def scan(df, b4, b1d, crypto, levels=None):
                 if lo - 0.2 * atr <= price <= hi + 0.2 * atr:
                     add("فيبوناتشي ذهبية", -1, pH + 0.1 * atr, 2, f"تصحيح داخل 0.5-0.786 [{lo:.2f}-{hi:.2f}]")
 
-    # 7) تشبع RSI عند منطقة (عكس الاتجاه، مخاطرة أعلى)
     near_zone = any(z["lo"] - 0.5 * atr <= price <= z["hi"] + 0.5 * atr for z in zones)
     if rsi <= 30 and near_zone:
         add("تشبع بيعي RSI عند دعم", 1, price - 1.5 * atr, 1, f"RSI={rsi:.0f} عند منطقة دعم")
     if rsi >= 70 and near_zone:
         add("تشبع شرائي RSI عند مقاومة", -1, price + 1.5 * atr, 1, f"RSI={rsi:.0f} عند منطقة مقاومة")
 
-    # 8) Order Block
     ob = order_block(d)
     if ob:
         dr, (lo, hi) = ob
@@ -222,7 +361,6 @@ def scan(df, b4, b1d, crypto, levels=None):
     if levels:
         out += level_setups(d, price, atr, levels)
 
-    # ---- التقييم (Confluence) ----
     hour = datetime.now(timezone.utc).hour
     session = crypto or 7 <= hour <= 20
     cnt = {1: len({s["name"] for s in out if s["dir"] == 1}), -1: len({s["name"] for s in out if s["dir"] == -1})}
@@ -279,174 +417,7 @@ def build(s, price, atr, pip, rr, min_tp):
             "risk_p": risk / pip, "tp1_p": tp1_p, "tp2_p": rr * 1.8 * risk / pip}, ""
 
 
-def fmt(x, pip):
-    return f"{x:.2f}" if pip >= 0.1 else f"{x:.5f}" if pip < 0.01 else f"{x:.3f}"
-
-
-
-
-
-
-
-
-# ---------------- استراتيجيات إضافية: Sweep+CHOCH، Range Breakout، نماذج فنية ----------------
-def extra_setups(d, price, atr, H, L, tr):
-    out = []
-    n = len(d)
-    hi, lo, cl, op = (d[c].values for c in ("High", "Low", "Close", "Open"))
-
-    def add(name, dr, sl, base, why):
-        out.append({"name": name, "dir": dr, "sl": float(sl), "score": base, "why": why})
-
-    g = lambda x: f"{x:.5g}"
-
-    # 1) Liquidity Sweep + CHOCH: سحب سيولة ثم كسر هيكل مصغّر عكسي (خلال آخر 3 شموع)
-    done = set()
-    for i in range(max(n - 12, 8), n - 1):
-        for hidx, lv in H[-4:]:
-            if 1 in done:
-                break
-            if hidx < i and hi[i] > lv and cl[i] < lv:
-                level = lo[i - 6:i].min()
-                ks = [k for k in range(i + 1, n) if cl[k] < level]
-                if ks and ks[0] >= n - 3 and price <= level + 0.3 * atr and level - price <= 2 * atr:
-                    add("Sweep + CHOCH بيع", -1, hi[i:].max() + 0.2 * atr, 4,
-                        f"سحب سيولة فوق {g(lv)} ثم كسر هيكل هابط تحت {g(level)}")
-                    done.add(1)
-        for lidx, lv in L[-4:]:
-            if 2 in done:
-                break
-            if lidx < i and lo[i] < lv and cl[i] > lv:
-                level = hi[i - 6:i].max()
-                ks = [k for k in range(i + 1, n) if cl[k] > level]
-                if ks and ks[0] >= n - 3 and price >= level - 0.3 * atr and price - level <= 2 * atr:
-                    add("Sweep + CHOCH شراء", 1, lo[i:].min() - 0.2 * atr, 4,
-                        f"سحب سيولة تحت {g(lv)} ثم كسر هيكل صاعد فوق {g(level)}")
-                    done.add(2)
-
-    # 2) CHOCH لوحده (تغير طبيعة السوق)
-    if len(H) >= 2 and len(L) >= 1 and H[-2][1] > H[-1][1]:
-        lv = H[-1][1]
-        if cl[-1] > lv and cl[-4:-1].min() <= lv and cl[-1] - lv <= 1.5 * atr:
-            add("CHOCH صاعد", 1, L[-1][1] - 0.2 * atr, 2, f"كسر آخر قمة هابطة {g(lv)} (تغير طبيعة السوق)")
-    if len(L) >= 2 and len(H) >= 1 and L[-2][1] < L[-1][1]:
-        lv = L[-1][1]
-        if cl[-1] < lv and cl[-4:-1].max() >= lv and lv - cl[-1] <= 1.5 * atr:
-            add("CHOCH هابط", -1, H[-1][1] + 0.2 * atr, 2, f"كسر آخر قاع صاعد {g(lv)} (تغير طبيعة السوق)")
-
-    # 3) Range Breakout
-    W = 20
-    if n > W + 4:
-        seg = slice(n - W - 2, n - 2)
-        rh, rl = hi[seg].max(), lo[seg].min()
-        if 0.8 * atr <= rh - rl <= 3.5 * atr:
-            body, mid = abs(cl[-1] - op[-1]), (rh + rl) / 2
-            if cl[-1] > rh + 0.1 * atr and cl[-2] <= rh + 0.1 * atr and body >= 0.5 * atr:
-                add("Range Breakout صاعد", 1, mid - 0.2 * atr, 3, f"كسر رينج [{g(rl)}-{g(rh)}] لأعلى")
-            if cl[-1] < rl - 0.1 * atr and cl[-2] >= rl - 0.1 * atr and body >= 0.5 * atr:
-                add("Range Breakout هابط", -1, mid + 0.2 * atr, 3, f"كسر رينج [{g(rl)}-{g(rh)}] لأسفل")
-
-    # 4) قمة/قاع مزدوج
-    if len(H) >= 2:
-        (i1, p1), (i2, p2) = H[-2], H[-1]
-        if i2 - i1 >= 8 and abs(p1 - p2) <= 0.35 * atr and n - 1 - i2 <= 30:
-            neck = lo[i1:i2 + 1].min()
-            if cl[-1] < neck and cl[-2] >= neck:
-                add("Double Top", -1, max(p1, p2) + 0.2 * atr, 3, f"قمة مزدوجة ~{g(p2)} وكسر العنق {g(neck)}")
-    if len(L) >= 2:
-        (i1, p1), (i2, p2) = L[-2], L[-1]
-        if i2 - i1 >= 8 and abs(p1 - p2) <= 0.35 * atr and n - 1 - i2 <= 30:
-            neck = hi[i1:i2 + 1].max()
-            if cl[-1] > neck and cl[-2] <= neck:
-                add("Double Bottom", 1, min(p1, p2) - 0.2 * atr, 3, f"قاع مزدوج ~{g(p2)} وكسر العنق {g(neck)}")
-
-    # 5) رأس وكتفين / مقلوب
-    if len(H) >= 3:
-        (i1, p1), (i2, p2), (i3, p3) = H[-3:]
-        if p2 > max(p1, p3) + 0.5 * atr and abs(p1 - p3) <= 0.8 * atr and i3 - i1 <= 80 and n - 1 - i3 <= 30:
-            neck = (lo[i1:i2 + 1].min() + lo[i2:i3 + 1].min()) / 2
-            if cl[-1] < neck and cl[-2] >= neck:
-                add("Head & Shoulders", -1, p3 + 0.2 * atr, 3, f"رأس وكتفين وكسر العنق {g(neck)}")
-    if len(L) >= 3:
-        (i1, p1), (i2, p2), (i3, p3) = L[-3:]
-        if p2 < min(p1, p3) - 0.5 * atr and abs(p1 - p3) <= 0.8 * atr and i3 - i1 <= 80 and n - 1 - i3 <= 30:
-            neck = (hi[i1:i2 + 1].max() + hi[i2:i3 + 1].max()) / 2
-            if cl[-1] > neck and cl[-2] <= neck:
-                add("Inverse H&S", 1, p3 - 0.2 * atr, 3, f"رأس وكتفين مقلوب وكسر العنق {g(neck)}")
-
-    # 6) مثلثات وأقنية سعرية (خطوط اتجاه من آخر قمتين وقاعين)
-    if len(H) >= 2 and len(L) >= 2:
-        (a1, b1), (a2, b2) = H[-2], H[-1]
-        (c1, d1), (c2, d2) = L[-2], L[-1]
-        if a2 - a1 >= 6 and c2 - c1 >= 6 and max(a2, c2) - min(a1, c1) <= 100:
-            su, sw = (b2 - b1) / (a2 - a1), (d2 - d1) / (c2 - c1)
-            up = lambda x: b2 + su * (x - a2)
-            lw = lambda x: d2 + sw * (x - c2)
-            x0 = min(a1, c1)
-            w0, wn = up(x0) - lw(x0), up(n - 1) - lw(n - 1)
-            conv = wn < 0.85 * w0 and wn > 0.5 * atr and su <= 0.03 * atr and sw >= -0.03 * atr
-            par = abs(su - sw) < 0.04 * atr and w0 > 0.8 * atr and wn > 0.8 * atr
-            if conv or par:
-                nm = "قناة سعرية"
-                if conv:
-                    nm = ("مثلث صاعد" if abs(su) <= 0.03 * atr and sw > 0.03 * atr else
-                          "مثلث هابط" if abs(sw) <= 0.03 * atr and su < -0.03 * atr else "مثلث متماثل")
-                mid = (up(n - 1) + lw(n - 1)) / 2
-                base = 3 if conv else 2
-                if cl[-1] > up(n - 1) + 0.1 * atr and cl[-2] <= up(n - 2) + 0.1 * atr:
-                    add(f"كسر {nm} لأعلى", 1, mid - 0.2 * atr, base, f"كسر خط {nm} العلوي")
-                if cl[-1] < lw(n - 1) - 0.1 * atr and cl[-2] >= lw(n - 2) + 0.0 - 0.1 * atr:
-                    add(f"كسر {nm} لأسفل", -1, mid + 0.2 * atr, base, f"كسر خط {nm} السفلي")
-
-    # 7) وتد صاعد / هابط (Wedge)
-    if len(H) >= 2 and len(L) >= 2:
-        (a1, b1), (a2, b2) = H[-2], H[-1]
-        (c1, e1), (c2, e2) = L[-2], L[-1]
-        if a2 - a1 >= 6 and c2 - c1 >= 6 and max(a2, c2) - min(a1, c1) <= 100:
-            su, sw = (b2 - b1) / (a2 - a1), (e2 - e1) / (c2 - c1)
-            up = lambda x: b2 + su * (x - a2)
-            lw = lambda x: e2 + sw * (x - c2)
-            x0 = min(a1, c1)
-            w0, wn = up(x0) - lw(x0), up(n - 1) - lw(n - 1)
-            if wn < 0.85 * w0 and wn > 0.5 * atr:
-                if su > 0.01 * atr and sw > su * 1.15 and cl[-1] < lw(n - 1) - 0.1 * atr and cl[-2] >= lw(n - 2) - 0.1 * atr:
-                    add("Rising Wedge", -1, up(n - 1) + 0.2 * atr, 3, "كسر وتد صاعد لأسفل")
-                if su < -0.01 * atr and sw < 0 and abs(sw) < abs(su) * 0.87 and cl[-1] > up(n - 1) + 0.1 * atr and cl[-2] <= up(n - 2) + 0.1 * atr:
-                    add("Falling Wedge", 1, lw(n - 1) - 0.2 * atr, 3, "كسر وتد هابط لأعلى")
-
-    # 8) قمم / قيعان ثلاثية
-    if len(H) >= 3:
-        vals = [p_ for _, p_ in H[-3:]]
-        i1, i3 = H[-3][0], H[-1][0]
-        if max(vals) - min(vals) <= 0.45 * atr and i3 - i1 >= 12 and n - 1 - i3 <= 40:
-            neck = lo[i1:i3 + 1].min()
-            if cl[-1] < neck and cl[-2] >= neck:
-                add("Triple Top", -1, max(vals) + 0.2 * atr, 3, f"قمة ثلاثية ~{g(vals[-1])} وكسر العنق {g(neck)}")
-    if len(L) >= 3:
-        vals = [p_ for _, p_ in L[-3:]]
-        i1, i3 = L[-3][0], L[-1][0]
-        if max(vals) - min(vals) <= 0.45 * atr and i3 - i1 >= 12 and n - 1 - i3 <= 40:
-            neck = hi[i1:i3 + 1].max()
-            if cl[-1] > neck and cl[-2] <= neck:
-                add("Triple Bottom", 1, min(vals) - 0.2 * atr, 3, f"قاع ثلاثي ~{g(vals[-1])} وكسر العنق {g(neck)}")
-
-    # 9) علم / راية (Flag / Pennant)
-    if n >= 30:
-        seg = d.iloc[-26:-11]
-        move = float(seg["Close"].iloc[-1] - seg["Close"].iloc[0])
-        aa = float(seg["ATR"].mean())
-        top, bot_ = float(hi[-11:-1].max()), float(lo[-11:-1].min())
-        if abs(move) > 2.0 * aa and (top - bot_) < 2.0 * aa:
-            if move > 0 and cl[-1] > top and cl[-2] <= top:
-                add("Bull Flag/Pennant", 1, bot_ - 0.15 * atr, 3, "اندفاع صاعد + تماسك ضيق ثم كسر لأعلى")
-            elif move < 0 and cl[-1] < bot_ and cl[-2] >= bot_:
-                add("Bear Flag/Pennant", -1, top + 0.15 * atr, 3, "اندفاع هابط + تماسك ضيق ثم كسر لأسفل")
-    return out
-
-
-# ---------------- إدارة الصفقة: انعكاس قوي فقط ----------------
 def reversal_reasons(fr, t, live):
-    """أسباب انعكاس قوي ضد الصفقة. قائمة فارغة = ما في انعكاس قوي (الإشارة الضعيفة لا تكفي)"""
     d = prep(fr["df"])
     n = len(d)
     if n < 30:
@@ -481,7 +452,6 @@ def reversal_reasons(fr, t, live):
     return reasons if len(reasons) >= 2 else []
 
 
-# ---------------- سياق الذهب: جلسات، مستويات مهمة، تقييم الصفقة ----------------
 def session_name(hour):
     if hour < 7:
         return "آسيا"
@@ -495,7 +465,6 @@ def session_name(hour):
 
 
 def gold_levels(df, now, round_step=0.0):
-    """قمة/قاع أمس، رينج آسيا، افتتاح اليوم، وأرقام دائرية قريبة"""
     days = list(df.index.normalize().unique())
     today = days[-1]
     keys = {}
@@ -518,7 +487,6 @@ def gold_levels(df, now, round_step=0.0):
 
 
 def level_setups(d, price, atr, lv):
-    """سحب سيولة ورفض عند المستويات المهمة (قمة/قاع أمس، رينج آسيا)"""
     out = []
     hi, lo = d["High"].values, d["Low"].values
     cl = d["Close"].values
@@ -568,7 +536,6 @@ def market_read(px, fr, lv, hour):
     return "\n".join(lines)
 
 
-# ---------------- البيانات ----------------
 SENT = []
 LAST_ERR = {"msg": ""}
 
@@ -610,7 +577,6 @@ def make_frames(df, now, sym):
     }
 
 
-# ---------------- الحالة وتيليجرام ----------------
 def load():
     try:
         with open(STATE_FILE, encoding="utf-8") as f:
@@ -636,7 +602,6 @@ def tg(text):
         print("telegram failed:", e)
 
 
-# ---------------- متابعة الصفقات: TP / SL / EARLY EXIT / BE ----------------
 def check_open(st, m5s, frames, now, day):
     still = []
     for t in st["open"]:
@@ -653,7 +618,7 @@ def check_open(st, m5s, frames, now, day):
                 sl_hit, tp_hit = c["Low"] <= t["sl"], c["High"] >= t["tp1"]
             else:
                 sl_hit, tp_hit = c["High"] >= t["sl"], c["Low"] <= t["tp1"]
-            if sl_hit:               # لو الاثنين بنفس الشمعة نعتبر الستوب أول (تحفظاً)
+            if sl_hit:
                 res = "SL"
                 break
             if tp_hit:
@@ -706,7 +671,6 @@ def check_open(st, m5s, frames, now, day):
     st["open"] = still
 
 
-# ---------------- التشغيل ----------------
 def main():
     if not TD_KEY:
         print("TWELVE_DATA_API_KEY غير موجود")
@@ -725,7 +689,7 @@ def main():
         day.setdefault(k, v)
     for k in list(st["days"].keys())[:-14]:
         del st["days"][k]
-    st["open"] = [t for t in st["open"] if isinstance(t, dict) and t.get("sym") in SYMBOLS]   # حذف الصفقات القديمة/المشوهة
+    st["open"] = [t for t in st["open"] if isinstance(t, dict) and t.get("sym") in SYMBOLS]
     st.setdefault("last_msg", now.isoformat())
 
     m5s = {}
@@ -809,7 +773,6 @@ def main():
            + "حسب التقييم: " + (" | ".join(f"{k} {v[0]}✅/{v[1]}❌" for k, v in day.get("g", {}).items()) or "لا يوجد"))
         day["summary"] = True
 
-    # نبض: إذا ما وصلت أي رسالة من HEARTBEAT_HOURS ساعة، بيبعت حالة البوت
     if not SENT and (now - pd.Timestamp(st["last_msg"])).total_seconds() >= HEARTBEAT_HOURS * 3600:
         sym0 = next(iter(m5s))
         px0 = float(m5s[sym0]["Close"].iloc[-1])
