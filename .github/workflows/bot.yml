@@ -36,7 +36,14 @@ jobs:
           TEST_MSG: ${{ github.event.inputs.test }}
         run: python bot.py
       - name: Save state
-        uses: stefanzweifel/git-auto-commit-action@v5
-        with:
-          commit_message: "Update state [skip ci]"
-          file_pattern: 'state.json'
+        run: |
+          git config user.name "bot"
+          git config user.email "bot@users.noreply.github.com"
+          if [ -f state.json ]; then
+            cp state.json /tmp/state.json
+            git fetch origin main
+            git reset --hard origin/main
+            cp /tmp/state.json state.json
+            git add state.json
+            git diff --cached --quiet || (git commit -m "state" && git push)
+          fi
