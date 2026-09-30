@@ -41,14 +41,20 @@ jobs:
             git config user.name "github-actions[bot]"
             git config user.email "github-actions[bot]@users.noreply.github.com"
             
+            # 1. حفظ النسخة الجديدة من الملف في المجلد المؤقت
             cp state.json /tmp/state.json
+            
+            # 2. جلب أحدث كود وتصفير أي تعارضات محلية
             git fetch origin main
             git reset --hard origin/main
+            
+            # 3. إعادة ملف النسخة الجديدة فوق أحدث كود
             cp /tmp/state.json state.json
             
+            # 4. الرفع المباشر
             git add state.json
             if ! git diff --cached --quiet; then
               git commit -m "Update state [skip ci]"
-              git push origin main || (git pull origin main --rebase -X theirs && git push origin main)
+              git push origin main
             fi
           fi
