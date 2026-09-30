@@ -1,6 +1,7 @@
 """
 بوت تداول XAU/USD ومؤشرات/عملات على GitHub Actions
 استراتيجية Break & Retest الشرسة بأهداف لا تقل عن 50 بيب ونسبة عائد 1:2.5
+مع إرسال رسالة تأكيد عند كل عملية فحص
 """
 import os
 import sys
@@ -300,6 +301,9 @@ def main():
     if not TD_KEY:
         print("TWELVE_DATA_API_KEY غير موجود")
         sys.exit(0)
+    
+    # رسالة تأكيد الفحص بتلغرام عند كل تشغيل
+    tg("🤖 البوت يعمل الآن ويقوم بفحص الأسواق...")
     
     now = pd.Timestamp(datetime.now(timezone.utc).replace(tzinfo=None))
     today = now.strftime("%Y-%m-%d")
