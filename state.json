@@ -1,6 +1,18 @@
 {
-  "open": {},
-  "days": {},
-  "last_signals": {},
-  "last_startup": ""
+ "open": [],
+ "days": {
+  "2026-09-30": {
+   "sent": 0,
+   "wins": 0,
+   "losses": 0,
+   "r": 0.0,
+   "summary": false,
+   "early": 0
+  }
+ },
+ "last_signals": {},
+ "last_startup": "",
+ "last": {},
+ "sig": {},
+ "last_msg": "2026-09-30T06:15:06.754357"
 }
