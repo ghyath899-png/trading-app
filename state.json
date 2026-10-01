@@ -75,18 +75,18 @@
   "2026-09-30": "sent"
  },
  "diag": {
-  "zones": 2190,
-  "breaks": 758,
-  "rt_level_lost": 301,
-  "break_weak": 195,
-  "setups": 142,
+  "zones": 2371,
+  "breaks": 823,
+  "rt_level_lost": 339,
+  "break_weak": 202,
+  "setups": 150,
   "build:الستوب المنطقي بعيد": 5,
-  "build:ستوب بالاتجاه الغلط": 27,
-  "rt_no_touch": 147,
-  "build:عائق قبل الهدف": 96,
+  "build:ستوب بالاتجاه الغلط": 28,
+  "rt_no_touch": 157,
+  "build:عائق قبل الهدف": 103,
   "break_entry_weak": 4,
-  "rt_no_followthrough": 30,
-  "rt_no_rejection": 11,
+  "rt_no_followthrough": 37,
+  "rt_no_rejection": 13,
   "chase": 1,
   "build:هدف قصير قبل منطقة": 7
  }
