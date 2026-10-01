@@ -17,11 +17,11 @@ TD_KEY = env("TWELVE_DATA_API_KEY")
 TG_TOKEN = env("TELEGRAM_BOT_TOKEN")
 TG_CHAT = env("TELEGRAM_CHAT_ID")
 SYMBOLS = [s.strip() for s in env("SYMBOLS", "XAU/USD").split(",") if s.strip()]
-MIN_SCORE = float(env("MIN_SCORE", "6"))       # أقل نقاط للإشارة (6 = صفقات مختارة؛ نزّلو لـ 4 لإشارات أكتر)
+MIN_SCORE = float(env("MIN_SCORE", "5"))       # أقل نقاط للإشارة (نزّلو لـ 4 لإشارات أكتر، ارفعو لـ 6 لصفقات أكتر انتقاء)
 RR = float(env("RR", "1.5"))                   # أقل نسبة ربح/مخاطرة للهدف الأول
 MIN_TP_PIPS = float(env("MIN_TP_PIPS", "50"))  # أقل هدف أول بالبيب (الذهب: 50 بيب = 5$)
 FRAMES = [f.strip() for f in env("FRAMES", "5min,15min").split(",") if f.strip()]
-ENGINE = env("ENGINE", "zones")                 # zones = كسر منطقة (تجميع/دعم/مقاومة) + إعادة اختبار؛ all = مع الاستراتيجيات القديمة كمان
+ENGINE = env("ENGINE", "all")                   # zones = كسر منطقة (تجميع/دعم/مقاومة) + إعادة اختبار؛ all = مع الاستراتيجيات القديمة كمان
 SESSION_START = int(env("SESSION_START", "7"))  # بداية التداول UTC (افتتاح لندن)
 SESSION_END = int(env("SESSION_END", "20"))     # نهاية التداول UTC (المساء)
 NEAR_ATR15 = float(env("NEAR_ATR15", "8"))      # أبعد منطقة مقبولة = هالعدد × تذبذب M15 (حوالي 25-30$)
@@ -143,6 +143,26 @@ def order_block(d):
 
 
 # ---------------- الاستراتيجيات ----------------
+DIAG = {}
+DIAG_LABELS = {
+    "zones": "مناطق قوية قريبة (مرات الفحص)", "breaks": "كسور مكتشفة", "break_weak": "كسر بشمعة ضعيفة (مرفوض)",
+    "break_entry_weak": "كسر مباشر بشمعة مو قوية كفاية أو بعيد", "rt_no_followthrough": "إعادة اختبار: السعر ما ابتعد بعد الكسر",
+    "rt_level_lost": "إعادة اختبار: السعر رجع عكس المستوى", "rt_no_touch": "إعادة اختبار: ما لمس المستوى",
+    "rt_no_rejection": "إعادة اختبار: ما في شمعة رفض", "rt_too_far": "إعادة اختبار: السعر بعيد عن المستوى",
+    "rt_violent_pullback": "إعادة اختبار: الرجعة عنيفة", "setups": "إشارات مرشحة (كل العائلات)",
+    "low_score": "مرفوض بسبب النقاط", "chase": "مرفوض: السعر ابتعد (مطاردة)", "zone_used": "منطقة مستخدمة اليوم",
+}
+
+
+def dg(key, n=1):
+    DIAG[key] = DIAG.get(key, 0) + n
+
+
+def diag_text(d):
+    items = sorted(d.items(), key=lambda kv: -kv[1])[:10]
+    return "\n".join(f"- {DIAG_LABELS.get(k, k.replace('build:', 'مرفوض بالبناء: '))}: {v}" for k, v in items)
+
+
 def find_zones(d, price, atr, levels, near):
     """مناطق مهمة وقريبة بس: تجميع (صناديق) حديث، دعم/مقاومة متكررة، قمة/قاع أمس ورينج آسيا"""
     n = len(d)
@@ -184,6 +204,7 @@ def breakout_engine(d, price, atr, zones):
     avg_rng = float(rng[-41:-1].mean()) or 1e-9
     g = lambda x: f"{x:.5g}"
     used = set()
+    dg("zones", sum(1 for z in zones if z["n"] >= 3))
     for z in zones:
         if z["n"] < 3:
             continue
@@ -198,7 +219,11 @@ def breakout_engine(d, price, atr, zones):
                     broke = cl[k] > lv + 0.15 * atr and cl[k - 1] <= lv + 0.05 * atr and pos >= 0.6
                 else:
                     broke = cl[k] < lv - 0.15 * atr and cl[k - 1] >= lv - 0.05 * atr and pos <= 0.4
-                if not broke or body < 0.5 * atr or rng[k] < 0.9 * avg_rng:
+                if not broke:
+                    continue
+                dg("breaks")
+                if body < 0.5 * atr or rng[k] < 0.9 * avg_rng:
+                    dg("break_weak")
                     continue
                 comp = float(rng[max(0, k - 12):k].mean()) <= 0.85 * avg_rng
                 strong = 1 if z["n"] >= 5 else 0
@@ -209,6 +234,8 @@ def breakout_engine(d, price, atr, zones):
                                     "score": 4 + (1 if comp else 0) + strong, "lvl": float(lv), "mode": "break",
                                     "why": f"كسر {z['kind']} {side} {g(lv)} بشمعة قوية" + (" بعد تجميع" if comp else "")})
                         used.add((round(lv, 1), dr))
+                    else:
+                        dg("break_entry_weak")
                 elif k <= n - 3:
                     if dr == 1:
                         run = hi[k:n - 1].max() - lv
@@ -230,6 +257,12 @@ def breakout_engine(d, price, atr, zones):
                                     "score": 5 + (1 if comp else 0) + strong, "lvl": float(lv), "mode": "retest",
                                     "why": f"كسر {z['kind']} {side} {g(lv)} ثم إعادة اختباره برجعة هادية ورفض والمستوى صامد"})
                         used.add((round(lv, 1), dr))
+                    else:
+                        for ok_, nm_ in ((run >= 0.6 * atr, "rt_no_followthrough"), (held, "rt_level_lost"), (touch, "rt_no_touch"),
+                                         (rej, "rt_no_rejection"), (close_ok, "rt_too_far"), (quiet, "rt_violent_pullback")):
+                            if not ok_:
+                                dg(nm_)
+                                break
                 break
     return out
 
@@ -353,9 +386,9 @@ def build(s, price, atr, pip, rr, min_tp=0, blockers=(), min_risk=0.0, struct=()
         d0 = (lv - price) if dr == 1 else (price - lv)
         if d0 <= 0:
             continue
-        if 0.05 * dist < d0 < 0.6 * dist:
+        if 0.05 * dist < d0 < 0.35 * dist:
             return None, "عائق قبل الهدف"
-        if 0.6 * dist <= d0 < 1.05 * dist:
+        if 0.35 * dist <= d0 < 1.05 * dist:
             trim = d0 - 0.15 * atr if trim is None else min(trim, d0 - 0.15 * atr)
     if trim is not None:
         if trim < max(1.0 * risk, 0.8 * (min_tp or 0) * pip):
@@ -849,6 +882,7 @@ def main():
     if env("TEST_MSG") == "1":
         tg("✅ البوت شغال وبيوصلك على تيليجرام.")
         return
+    DIAG.clear()
     now = pd.Timestamp(datetime.now(timezone.utc).replace(tzinfo=None))
     today = now.strftime("%Y-%m-%d")
     st = load()
@@ -909,6 +943,7 @@ def main():
                     if len(d) < 80:
                         break
                     setups, ctx = scan(d, f["b"][0], f["b"][1], "BTC" in sym, f["lv"], tf, a15)
+                    dg("setups", len(setups))
                     need = MIN_SCORE + FRAME_EXTRA.get(tf, 0)
                     blockers = [e for z in ctx["zl"] if z["n"] >= 3 for e in (z["lo"], z["hi"])] + [z["lvl"] for z in ctx["zones"] if z["n"] >= 3] + list(f["lv"]["keys"].values())
                     struct = blockers + ctx["swings"] + [e for z in ctx["zones"] if z["n"] >= 2 for e in (z["lo"], z["hi"])]
@@ -924,13 +959,19 @@ def main():
                         if lvl is not None:   # كل منطقة بتنأخد مرة وحدة باليوم (إما مع الكسر أو بإعادة الاختبار)
                             zk = f"Z|{sym}|{round(lvl / max(0.5 * a15, 0.5 * ctx['atr'], 0.01))}|{s['dir']}|{today}"
                             if zk in st["sig"]:
+                                dg("zone_used")
                                 continue
                         own = [b_ for b_ in blockers if lvl is None or abs(b_ - lvl) > 0.5 * ctx["atr"]]
-                        t, _ = build(s, live, ctx["atr"], pip, RR, MIN_TP_PIPS, own, min_risk, struct, buf)
-                        if not t or s["score"] < need:
+                        t, why_b = build(s, live, ctx["atr"], pip, RR, MIN_TP_PIPS, own, min_risk, struct, buf)
+                        if not t:
+                            dg("build:" + why_b)
+                            continue
+                        if s["score"] < need:
+                            dg("low_score")
                             continue
                         moved, rk = s["dir"] * (live - ctx["price"]), abs(t["entry"] - t["sl"])
                         if not (-0.5 * rk <= moved <= 0.4 * rk):
+                            dg("chase")
                             continue   # السعر ابتعد عن نقطة الإشارة (مطاردة) أو رجع ضدها
                         if sym not in best or s["score"] > best[sym]["score"]:
                             s.update(t)
@@ -975,13 +1016,20 @@ def main():
            + "\nحسب الاستراتيجية: " + (" | ".join(f"{k} {v[0]}✅/{v[1]}❌" for k, v in day.get("s", {}).items()) or "لا يوجد"))
         day["summary"] = True
 
+    print("DIAG", DIAG)
+    dd = st.setdefault("diag", {})
+    for k_, v_ in DIAG.items():
+        dd[k_] = dd.get(k_, 0) + v_
+
     # نبض: إذا ما وصلت أي رسالة من HEARTBEAT_HOURS ساعة، بيبعت حالة البوت
     if not SENT and (now - pd.Timestamp(st["last_msg"])).total_seconds() >= HEARTBEAT_HOURS * 3600:
         sym0 = next(iter(m5s))
         px0 = float(m5s[sym0]["Close"].iloc[-1])
         tg(f"🫀 البوت شغال ({now:%H:%M} UTC) - {sym0}\nما وصلت إشارات منذ {HEARTBEAT_HOURS:g} ساعات.\n"
            f"السبب: {reason}\n\n{market_read(px0, frames[sym0], frames[sym0]['15min']['lv'], now.hour)}\n\n"
-           f"اليوم: إشارات {day['sent']} | رابحة {day['wins']} | خاسرة {day['losses']} | صافي {day['r']:+.1f}R")
+           f"اليوم: إشارات {day['sent']} | رابحة {day['wins']} | خاسرة {day['losses']} | صافي {day['r']:+.1f}R"
+           + (f"\n\nليش ما في إشارات (آخر الفترة):\n{diag_text(dd)}" if dd else ""))
+        st["diag"] = {}
     if SENT:
         st["last_msg"] = now.isoformat()
     save(st)
