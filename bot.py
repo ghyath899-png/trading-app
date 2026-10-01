@@ -17,16 +17,19 @@ TD_KEY = env("TWELVE_DATA_API_KEY")
 TG_TOKEN = env("TELEGRAM_BOT_TOKEN")
 TG_CHAT = env("TELEGRAM_CHAT_ID")
 SYMBOLS = [s.strip() for s in env("SYMBOLS", "XAU/USD").split(",") if s.strip()]
-MIN_SCORE = float(env("MIN_SCORE", "5"))       # أقل نقاط للإشارة (نزّلو لـ 4 لإشارات أكتر، ارفعو لـ 6 لصفقات أكتر انتقاء)
+MIN_SCORE = float(env("MIN_SCORE", "4"))       # أقل نقاط للإشارة (نزّلو لـ 4 لإشارات أكتر، ارفعو لـ 6 لصفقات أكتر انتقاء)
 RR = float(env("RR", "1.5"))                   # أقل نسبة ربح/مخاطرة للهدف الأول
 MIN_TP_PIPS = float(env("MIN_TP_PIPS", "50"))  # أقل هدف أول بالبيب (الذهب: 50 بيب = 5$)
-FRAMES = [f.strip() for f in env("FRAMES", "5min,15min").split(",") if f.strip()]
+FRAMES = [f.strip() for f in env("FRAMES", "1min,5min,15min").split(",") if f.strip()]
+WANT_TP_PIPS = float(env("WANT_TP_PIPS", "100"))   # الهدف الأول المفضّل (100 بيب = 10$) والثاني 150؛ بيتقصّر قبل منطقة قوية لكن مو أقل من MIN_TP_PIPS
+TREND_PENALTY = float(env("TREND_PENALTY", "0"))   # خصم نقاط لصفقة عكس اتجاه الفريم الأكبر (0 = بس تحذير، مو منع)
+ZONE_MIN_N = int(env("ZONE_MIN_N", "2"))           # أقل عدد لمسات لتعتبر المنطقة مهمة
 ENGINE = env("ENGINE", "all")                   # zones = كسر منطقة (تجميع/دعم/مقاومة) + إعادة اختبار؛ all = مع الاستراتيجيات القديمة كمان
 SESSION_START = int(env("SESSION_START", "7"))  # بداية التداول UTC (افتتاح لندن)
 SESSION_END = int(env("SESSION_END", "20"))     # نهاية التداول UTC (المساء)
-NEAR_ATR15 = float(env("NEAR_ATR15", "8"))      # أبعد منطقة مقبولة = هالعدد × تذبذب M15 (حوالي 25-30$)
+NEAR_ATR15 = float(env("NEAR_ATR15", "10"))      # أبعد منطقة مقبولة = هالعدد × تذبذب M15 (حوالي 25-30$)
 MODE_AR = {"break": "مع الكسر مباشرة", "retest": "بعد إعادة اختبار مؤكدة"}
-FRAME_EXTRA = {"1min": 1, "5min": 0, "15min": 0}         # نقاط زيادة مطلوبة على الفريمات الصغيرة (ضجيج أكتر)
+FRAME_EXTRA = {"1min": 0, "5min": 0, "15min": 0}         # نقاط زيادة مطلوبة على الفريمات الصغيرة (ضجيج أكتر)
 STOP_ATR_FRAME = float(env("STOP_ATR_FRAME", "1.3"))  # أدنى ستوب = هالعدد × تذبذب الفريم (ATR)
 STOP_ATR_M15 = float(env("STOP_ATR_M15", "1.0"))      # وأدنى ستوب = هالعدد × تذبذب M15 (حتى صفقات M1/M5 ما ينضربوا بضجيج)
 SPREAD_PIPS = float(env("SPREAD_PIPS", "3"))          # سبريد تقريبي بيضيفو للستوب خلف المستويات
@@ -204,9 +207,9 @@ def breakout_engine(d, price, atr, zones):
     avg_rng = float(rng[-41:-1].mean()) or 1e-9
     g = lambda x: f"{x:.5g}"
     used = set()
-    dg("zones", sum(1 for z in zones if z["n"] >= 3))
+    dg("zones", sum(1 for z in zones if z["n"] >= ZONE_MIN_N))
     for z in zones:
-        if z["n"] < 3:
+        if z["n"] < ZONE_MIN_N:
             continue
         for dr in (1, -1):
             lv = z["hi"] if dr == 1 else z["lo"]
@@ -222,14 +225,14 @@ def breakout_engine(d, price, atr, zones):
                 if not broke:
                     continue
                 dg("breaks")
-                if body < 0.5 * atr or rng[k] < 0.9 * avg_rng:
+                if body < 0.4 * atr or rng[k] < 0.8 * avg_rng:
                     dg("break_weak")
                     continue
                 comp = float(rng[max(0, k - 12):k].mean()) <= 0.85 * avg_rng
                 strong = 1 if z["n"] >= 5 else 0
                 side = "أعلى" if dr == 1 else "أسفل"
                 if k == n - 1:
-                    if abs(price - lv) <= 2.6 * atr and body >= 0.9 * atr and rng[k] >= 1.2 * avg_rng:
+                    if abs(price - lv) <= 2.6 * atr and body >= 0.7 * atr and rng[k] >= 1.0 * avg_rng:
                         out.append({"name": "Breakout قوي", "dir": dr, "sl": float(lv - dr * 0.5 * atr),
                                     "score": 4 + (1 if comp else 0) + strong, "lvl": float(lv), "mode": "break",
                                     "why": f"كسر {z['kind']} {side} {g(lv)} بشمعة قوية" + (" بعد تجميع" if comp else "")})
@@ -242,23 +245,23 @@ def breakout_engine(d, price, atr, zones):
                         held = bool((cl[k + 1:] >= lv - 0.15 * atr).all())
                         touch = lo[-1] <= lv + 0.35 * atr and cl[-1] > lv
                         rej = cl[-1] > op[-1] or (min(cl[-1], op[-1]) - lo[-1]) >= abs(cl[-1] - op[-1])
-                        close_ok = price - lv <= 1.2 * atr
+                        close_ok = price - lv <= 1.5 * atr
                     else:
                         run = lv - lo[k:n - 1].min()
                         held = bool((cl[k + 1:] <= lv + 0.15 * atr).all())
                         touch = hi[-1] >= lv - 0.35 * atr and cl[-1] < lv
                         rej = cl[-1] < op[-1] or (hi[-1] - max(cl[-1], op[-1])) >= abs(cl[-1] - op[-1])
-                        close_ok = lv - price <= 1.2 * atr
+                        close_ok = lv - price <= 1.5 * atr
                     mid_b = abs(cl[k + 1:n - 1] - op[k + 1:n - 1])
-                    quiet = len(mid_b) == 0 or float(mid_b.mean()) <= 0.8 * body   # الرجعة أضعف من شمعة الكسر = اختبار مش انعكاس
-                    if run >= 0.6 * atr and held and touch and rej and close_ok and quiet:
+                    quiet = len(mid_b) == 0 or float(mid_b.mean()) <= 1.0 * body   # الرجعة أضعف من شمعة الكسر = اختبار مش انعكاس
+                    if run >= 0.5 * atr and held and touch and rej and close_ok and quiet:
                         sl = (min(lo[-1], lv) - 0.3 * atr) if dr == 1 else (max(hi[-1], lv) + 0.3 * atr)
                         out.append({"name": "Break & Retest مؤكد", "dir": dr, "sl": float(sl),
                                     "score": 5 + (1 if comp else 0) + strong, "lvl": float(lv), "mode": "retest",
                                     "why": f"كسر {z['kind']} {side} {g(lv)} ثم إعادة اختباره برجعة هادية ورفض والمستوى صامد"})
                         used.add((round(lv, 1), dr))
                     else:
-                        for ok_, nm_ in ((run >= 0.6 * atr, "rt_no_followthrough"), (held, "rt_level_lost"), (touch, "rt_no_touch"),
+                        for ok_, nm_ in ((run >= 0.5 * atr, "rt_no_followthrough"), (held, "rt_level_lost"), (touch, "rt_no_touch"),
                                          (rej, "rt_no_rejection"), (close_ok, "rt_too_far"), (quiet, "rt_violent_pullback")):
                             if not ok_:
                                 dg(nm_)
@@ -315,8 +318,8 @@ def scan(df, b4, b1d, crypto, levels=None, tf="5min", a15=0.0):
                 s["score"] += 1
                 tags.append(f"مع اتجاه {label}")
             elif bias == -dr:
-                s["score"] -= 1
-                warn.append(f"عكس اتجاه {label} (خُصمت نقطة)")
+                s["score"] -= TREND_PENALTY
+                warn.append(f"ارتداد عكس اتجاه {label}: صفقة أقصر عمراً، صغّر الحجم")
         if (dr == 1 and bull) or (dr == -1 and bear):
             s["score"] += 1
             tags.append("شمعة تأكيد")
@@ -355,7 +358,7 @@ def scan(df, b4, b1d, crypto, levels=None, tf="5min", a15=0.0):
     return out, ctx
 
 
-def build(s, price, atr, pip, rr, min_tp=0, blockers=(), min_risk=0.0, struct=(), buf=0.0):
+def build(s, price, atr, pip, rr, min_tp=0, blockers=(), min_risk=0.0, struct=(), buf=0.0, want_tp=0.0):
     """الستوب بيتحدد من السوق: نقطة إبطال النمط/المنطقة، ثم أدنى حد حسب تذبذب السوق الحالي، ثم خلف أقرب مستوى سيولة"""
     dr, sl = s["dir"], s["sl"]
     if (dr == 1 and sl >= price) or (dr == -1 and sl <= price):
@@ -379,7 +382,7 @@ def build(s, price, atr, pip, rr, min_tp=0, blockers=(), min_risk=0.0, struct=()
     risk = abs(price - sl)
     if risk > max(4 * atr, 2.5 * floor):
         return None, "الستوب المنطقي بعيد"
-    dist = max(rr * risk, (min_tp or 0) * pip)
+    dist = max(rr * risk, (want_tp or min_tp or 0) * pip)
     tp1 = price + dr * dist
     trim = None
     for lv in blockers:   # منطقة قوية قدام الهدف: إما نرفض الصفقة أو نقصّر الهدف قبلها
@@ -391,12 +394,12 @@ def build(s, price, atr, pip, rr, min_tp=0, blockers=(), min_risk=0.0, struct=()
         if 0.35 * dist <= d0 < 1.05 * dist:
             trim = d0 - 0.15 * atr if trim is None else min(trim, d0 - 0.15 * atr)
     if trim is not None:
-        if trim < max(1.0 * risk, 0.8 * (min_tp or 0) * pip):
+        if trim < max(1.0 * risk, (min_tp or 0) * pip):
             return None, "هدف قصير قبل منطقة"
         dist = trim
         tp1 = price + dr * dist
-    return {"entry": price, "sl": sl, "tp1": tp1, "tp2": price + dr * dist * 1.8,
-            "risk_p": risk / pip, "tp1_p": dist / pip, "tp2_p": dist * 1.8 / pip,
+    return {"entry": price, "sl": sl, "tp1": tp1, "tp2": price + dr * dist * 1.5,
+            "risk_p": risk / pip, "tp1_p": dist / pip, "tp2_p": dist * 1.5 / pip,
             "sl_note": " | ".join(notes)}, ""
 
 
@@ -713,12 +716,9 @@ def market_read(px, fr, lv, hour):
     if near:
         lines.append("أقرب مستويات: " + " | ".join(f"{nm} {v:.5g}" for _, nm, v in near))
     b = b_h4 or b_h1
-    if b > 0:
-        lines.append("خطتي: أفضّل الشراء مع الاتجاه. أنتظر سحب سيولة تحت قاع قريب ثم CHOCH صاعد، أو ارتداد من مستوى مهم.")
-    elif b < 0:
-        lines.append("خطتي: أفضّل البيع مع الاتجاه. أنتظر سحب سيولة فوق قمة قريبة ثم CHOCH هابط، أو ارتداد من مستوى مهم.")
-    else:
-        lines.append("خطتي: السوق عرضي. أنتظر كسر رينج أو سحب سيولة عند حدود الرينج قبل أي دخول.")
+    side = "صاعد" if b > 0 else "هابط" if b < 0 else "عرضي"
+    lines.append(f"خطتي: الاتجاه الأكبر {side}. بدور على صفقات مع الاتجاه، وكمان ارتدادات قصيرة عكسو (تنبيه + حجم أصغر) على الفريمات الصغيرة، "
+                 "مع كسر وإعادة اختبار ونماذج وسحب سيولة عند المناطق القريبة.")
     return "\n".join(lines)
 
 
@@ -962,7 +962,7 @@ def main():
                                 dg("zone_used")
                                 continue
                         own = [b_ for b_ in blockers if lvl is None or abs(b_ - lvl) > 0.5 * ctx["atr"]]
-                        t, why_b = build(s, live, ctx["atr"], pip, RR, MIN_TP_PIPS, own, min_risk, struct, buf)
+                        t, why_b = build(s, live, ctx["atr"], pip, RR, MIN_TP_PIPS, own, min_risk, struct, buf, WANT_TP_PIPS)
                         if not t:
                             dg("build:" + why_b)
                             continue
