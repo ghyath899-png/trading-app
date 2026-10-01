@@ -70,15 +70,16 @@
   "2026-09-30": "sent"
  },
  "diag": {
-  "zones": 681,
-  "breaks": 170,
-  "rt_level_lost": 52,
-  "break_weak": 78,
-  "setups": 28,
+  "zones": 857,
+  "breaks": 225,
+  "rt_level_lost": 75,
+  "break_weak": 85,
+  "setups": 34,
   "build:الستوب المنطقي بعيد": 5,
   "build:ستوب بالاتجاه الغلط": 5,
-  "rt_no_touch": 28,
-  "build:عائق قبل الهدف": 13,
-  "break_entry_weak": 2
+  "rt_no_touch": 43,
+  "build:عائق قبل الهدف": 19,
+  "break_entry_weak": 3,
+  "rt_no_followthrough": 1
  }
 }
