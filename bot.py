@@ -762,6 +762,13 @@ def tg(text):
 def check_open(st, m5s, frames, now, day):
     still = []
     for t in st["open"]:
+        if not all(k in t for k in ("sym", "dir", "entry", "sl", "tp1", "time")):
+            print("تم حذف صفقة قديمة ناقصة البيانات:", t)
+            continue
+        t.setdefault("name", "؟")
+        t.setdefault("tp2", t["tp1"])
+        t.setdefault("rr", 1.0)
+        t.setdefault("gk", "؟")
         sym = t["sym"]
         df = m5s.get(sym)
         if df is None:
@@ -801,7 +808,7 @@ def check_open(st, m5s, frames, now, day):
             day["r"] -= 1
             tg(f"❌ ضرب الستوب\n{sym} ({side}) - {t['name']}\nالستوب {t['sl']:.5g}\nالبوت رجع يدوّر على Setup جديد.")
         elif res == "EXPIRED":
-            tg(f"⌛ انتهت الصفقة بدون نتيجة بعد {EXPIRE_BY_TF.get(t["tf"], EXPIRE_HOURS):.1f} ساعات\n{sym} ({side}) - {t['name']}\nالبوت رجع يدوّر على Setup جديد.")
+            tg(f"⌛ انتهت الصفقة بدون نتيجة بعد {EXPIRE_BY_TF.get(t['tf'], EXPIRE_HOURS):.1f} ساعات\n{sym} ({side}) - {t['name']}\nالبوت رجع يدوّر على Setup جديد.")
         else:
             fr = frames.get(sym, {}).get(t["tf"])
             reasons = []
@@ -981,4 +988,20 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception:
+        import traceback
+        tb = traceback.format_exc()
+        print(tb)
+        try:
+            st = load()
+            now_ = pd.Timestamp(datetime.now(timezone.utc).replace(tzinfo=None))
+            last_ = st.get("err_time")
+            if not last_ or (now_ - pd.Timestamp(last_)).total_seconds() > 3600:
+                tg("🚨 خطأ بالبوت (ابعت هالنص للمساعد):\n" + tb[-800:])
+                st["err_time"] = now_.isoformat()
+                save(st)
+        except Exception as e2:
+            print("failed to report error:", e2)
+        sys.exit(0)
