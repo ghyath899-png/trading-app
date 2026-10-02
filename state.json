@@ -1,22 +1,5 @@
 {
- "open": [
-  {
-   "sym": "XAU/USD",
-   "dir": -1,
-   "entry": 4173.49957,
-   "sl": 4182.020276676754,
-   "tp1": 4160.718509984868,
-   "tp2": 4154.327979977303,
-   "rr": 1.5,
-   "name": "كسر وهمي → ارتداد",
-   "tf": "1min",
-   "time": "2026-10-02T10:19:00",
-   "be": false,
-   "gk": "ممتازة",
-   "lvl": 4178.92563,
-   "w1": true
-  }
- ],
+ "open": [],
  "days": {
   "2026-09-30": {
    "sent": 2,
@@ -85,14 +68,14 @@
   "2026-10-02": {
    "sent": 3,
    "wins": 1,
-   "losses": 1,
-   "r": -0.8246873710092625,
+   "losses": 2,
+   "r": -1.8246873710092624,
    "summary": false,
    "early": 1,
    "g": {
     "ممتازة": [
      1,
-     1
+     2
     ]
    },
    "s": {
@@ -102,7 +85,7 @@
     ],
     "كسر وهمي → ارتداد": [
      0,
-     1
+     2
     ]
    }
   }
@@ -126,28 +109,29 @@
   "XAU/USD|1min|كسر وهمي → ارتداد|-1|2026-10-02T10:11:00": "2026-10-02T10:20:50.011982",
   "Z|XAU/USD|1068|-1|2026-10-02": "2026-10-02T10:20:50.011982"
  },
- "last_msg": "2026-10-02T10:37:59.511292",
+ "last_msg": "2026-10-02T10:54:26.672981",
  "direction": {},
  "startup": {
   "2026-09-30": "sent"
  },
  "diag": {
-  "zones": 1594,
-  "breaks": 680,
-  "rt_level_lost": 254,
-  "rt_no_touch": 141,
-  "rt_no_followthrough": 34,
-  "setups": 271,
-  "build:عائق قبل الهدف": 204,
-  "rt_no_rejection": 25,
-  "fakeouts": 79,
-  "break_weak": 131,
+  "zones": 1732,
+  "breaks": 742,
+  "rt_level_lost": 269,
+  "rt_no_touch": 152,
+  "rt_no_followthrough": 36,
+  "setups": 298,
+  "build:عائق قبل الهدف": 231,
+  "rt_no_rejection": 29,
+  "fakeouts": 95,
+  "break_weak": 149,
   "build:ستوب بالاتجاه الغلط": 50,
-  "dbl_forming": 35,
+  "dbl_forming": 37,
   "rt_strong_opposite": 7,
   "build:هدف قصير قبل منطقة": 12,
   "rt_too_far": 2,
-  "break_entry_weak": 1,
-  "news_candle_wait": 1
+  "break_entry_weak": 2,
+  "news_candle_wait": 1,
+  "rt_violent_pullback": 3
  }
 }
