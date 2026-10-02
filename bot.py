@@ -28,7 +28,7 @@ ENGINE = env("ENGINE", "all")                   # zones = كسر منطقة (ت�
 SESSION_START = int(env("SESSION_START", "7"))  # بداية التداول UTC (افتتاح لندن)
 SESSION_END = int(env("SESSION_END", "20"))     # نهاية التداول UTC (المساء)
 NEAR_ATR15 = float(env("NEAR_ATR15", "10"))      # أبعد منطقة مقبولة = هالعدد × تذبذب M15 (حوالي 25-30$)
-MODE_AR = {"break": "مع الكسر مباشرة", "retest": "بعد إعادة اختبار مؤكدة"}
+MODE_AR = {"break": "مع الكسر مباشرة", "retest": "بعد إعادة اختبار مؤكدة", "fakeout": "ارتداد بعد كسر وهمي", "forming": "نموذج قيد التشكل (قبل كسر العنق)"}
 FRAME_EXTRA = {"1min": 0, "5min": 0, "15min": 0}         # نقاط زيادة مطلوبة على الفريمات الصغيرة (ضجيج أكتر)
 STOP_ATR_FRAME = float(env("STOP_ATR_FRAME", "1.3"))  # أدنى ستوب = هالعدد × تذبذب الفريم (ATR)
 STOP_ATR_M15 = float(env("STOP_ATR_M15", "1.0"))      # وأدنى ستوب = هالعدد × تذبذب M15 (حتى صفقات M1/M5 ما ينضربوا بضجيج)
@@ -153,6 +153,9 @@ DIAG_LABELS = {
     "rt_level_lost": "إعادة اختبار: السعر رجع عكس المستوى", "rt_no_touch": "إعادة اختبار: ما لمس المستوى",
     "rt_no_rejection": "إعادة اختبار: ما في شمعة رفض", "rt_too_far": "إعادة اختبار: السعر بعيد عن المستوى",
     "rt_violent_pullback": "إعادة اختبار: الرجعة عنيفة", "setups": "إشارات مرشحة (كل العائلات)",
+    "fakeouts": "كسر وهمي مكتشف (صفقة ارتداد)", "rt_strong_opposite": "إعادة اختبار: شمعة معاكسة قوية بعد الكسر (كسر وهمي محتمل)",
+    "news_spike": "شمعة ضخمة (خبر): ما بندخل معها", "news_spike_wait": "شمعة ضخمة: ننتظر تثبيت 3 شموع",
+    "dbl_forming": "قاع/قمة مزدوجة قيد التشكل (مكتشفة)", "news_candle_wait": "شمعة ضخمة مثل الخبر: البوت ينتظر",
     "low_score": "مرفوض بسبب النقاط", "chase": "مرفوض: السعر ابتعد (مطاردة)", "zone_used": "منطقة مستخدمة اليوم",
 }
 
@@ -196,7 +199,7 @@ def find_zones(d, price, atr, levels, near):
     return out
 
 
-def breakout_engine(d, price, atr, zones):
+def breakout_engine(d, price, atr, zones, a15=0.0):
     """كسر منطقة بشمعة قوية: إما دخول مع الكسر (شمعة الكسر هي آخر شمعة)، أو إعادة اختبار مؤكدة (رجعة هادية + رفض + المستوى صامد)"""
     out = []
     n = len(d)
@@ -206,6 +209,7 @@ def breakout_engine(d, price, atr, zones):
     rng = hi - lo
     avg_rng = float(rng[-41:-1].mean()) or 1e-9
     g = lambda x: f"{x:.5g}"
+    tol = max(0.15 * atr, 0.08 * a15)   # سماحية بالسعر (مهمة بفريم الدقيقة حيث ATR صغير جداً)
     used = set()
     dg("zones", sum(1 for z in zones if z["n"] >= ZONE_MIN_N))
     for z in zones:
@@ -231,30 +235,36 @@ def breakout_engine(d, price, atr, zones):
                 comp = float(rng[max(0, k - 12):k].mean()) <= 0.85 * avg_rng
                 strong = 1 if z["n"] >= 5 else 0
                 side = "أعلى" if dr == 1 else "أسفل"
+                spike = rng[k] >= 3.0 * avg_rng   # شمعة ضخمة (شبه خبر): غالباً بترجع، ما بندخل معها ولا بنعتمد عليها بدون تأكيد
                 if k == n - 1:
-                    if abs(price - lv) <= 2.6 * atr and body >= 0.7 * atr and rng[k] >= 1.0 * avg_rng:
+                    if abs(price - lv) <= 2.6 * atr and body >= 0.7 * atr and rng[k] >= 1.0 * avg_rng and not spike:
                         out.append({"name": "Breakout قوي", "dir": dr, "sl": float(lv - dr * 0.5 * atr),
                                     "score": 4 + (1 if comp else 0) + strong, "lvl": float(lv), "mode": "break",
                                     "why": f"كسر {z['kind']} {side} {g(lv)} بشمعة قوية" + (" بعد تجميع" if comp else "")})
                         used.add((round(lv, 1), dr))
                     else:
-                        dg("break_entry_weak")
+                        dg("news_spike" if spike else "break_entry_weak")
                 elif k <= n - 3:
                     if dr == 1:
                         run = hi[k:n - 1].max() - lv
-                        held = bool((cl[k + 1:] >= lv - 0.15 * atr).all())
+                        held = bool((cl[k + 1:] >= lv - tol).all())
                         touch = lo[-1] <= lv + 0.35 * atr and cl[-1] > lv
                         rej = cl[-1] > op[-1] or (min(cl[-1], op[-1]) - lo[-1]) >= abs(cl[-1] - op[-1])
                         close_ok = price - lv <= 1.5 * atr
                     else:
                         run = lv - lo[k:n - 1].min()
-                        held = bool((cl[k + 1:] <= lv + 0.15 * atr).all())
+                        held = bool((cl[k + 1:] <= lv + tol).all())
                         touch = hi[-1] >= lv - 0.35 * atr and cl[-1] < lv
                         rej = cl[-1] < op[-1] or (hi[-1] - max(cl[-1], op[-1])) >= abs(cl[-1] - op[-1])
                         close_ok = lv - price <= 1.5 * atr
+                    if dr == 1:
+                        opp = bool(((op[k + 1:n - 1] - cl[k + 1:n - 1]) >= 1.0 * atr).any())   # شمعة هابطة قوية بعد الكسر = رفض/كسر وهمي
+                    else:
+                        opp = bool(((cl[k + 1:n - 1] - op[k + 1:n - 1]) >= 1.0 * atr).any())
+                    acc = (not spike) or (n - 1 - k) >= 3   # شمعة الخبر لازم يتبعها تثبيت 3 شموع على الأقل
                     mid_b = abs(cl[k + 1:n - 1] - op[k + 1:n - 1])
                     quiet = len(mid_b) == 0 or float(mid_b.mean()) <= 1.0 * body   # الرجعة أضعف من شمعة الكسر = اختبار مش انعكاس
-                    if run >= 0.5 * atr and held and touch and rej and close_ok and quiet:
+                    if run >= 0.5 * atr and held and touch and rej and close_ok and quiet and acc and not opp:
                         sl = (min(lo[-1], lv) - 0.3 * atr) if dr == 1 else (max(hi[-1], lv) + 0.3 * atr)
                         out.append({"name": "Break & Retest مؤكد", "dir": dr, "sl": float(sl),
                                     "score": 5 + (1 if comp else 0) + strong, "lvl": float(lv), "mode": "retest",
@@ -262,11 +272,104 @@ def breakout_engine(d, price, atr, zones):
                         used.add((round(lv, 1), dr))
                     else:
                         for ok_, nm_ in ((run >= 0.5 * atr, "rt_no_followthrough"), (held, "rt_level_lost"), (touch, "rt_no_touch"),
-                                         (rej, "rt_no_rejection"), (close_ok, "rt_too_far"), (quiet, "rt_violent_pullback")):
+                                         (rej, "rt_no_rejection"), (close_ok, "rt_too_far"), (quiet, "rt_violent_pullback"),
+                                         (not opp, "rt_strong_opposite"), (acc, "news_spike_wait")):
                             if not ok_:
                                 dg(nm_)
                                 break
                 break
+    return out
+
+
+def fakeout_engine(d, price, atr, zones, a15=0.0):
+    """كسر وهمي: السعر اخترق منطقة (حتى بشمعة خبر) ثم رجع وأغلق جواتها برفض قوي = صفقة ارتداد عكس الاختراق"""
+    out = []
+    n = len(d)
+    if n < 40:
+        return out
+    hi, lo, cl, op = (d[c].values for c in ("High", "Low", "Close", "Open"))
+    tol = max(0.2 * atr, 0.05 * a15)   # الاختراق لازم يكون ملحوظ (مو لمسة صغيرة)
+    g = lambda x: f"{x:.5g}"
+    for z in zones:
+        if z["n"] < max(ZONE_MIN_N, 3):
+            continue
+        strong = 1 if z["n"] >= 5 else 0
+        win = range(n - 3, n)
+        # اختراق وهمي للأعلى (مقاومة) -> بيع
+        lv = z["hi"]
+        pierce = [j for j in win if hi[j] > lv + tol]
+        if pierce:
+            ext = max(hi[j] for j in pierce)
+            wick_rej = any((hi[j] - max(cl[j], op[j])) >= max(abs(cl[j] - op[j]), 0.3 * atr) and cl[j] < lv for j in pierce)
+            strong_back = cl[-1] < lv and cl[-1] < op[-1] and abs(cl[-1] - op[-1]) >= 0.5 * atr
+            if cl[-1] < lv - 0.1 * atr and (wick_rej or strong_back) and lv - price <= 1.5 * atr:
+                dg("fakeouts")
+                out.append({"name": "كسر وهمي → ارتداد", "dir": -1, "sl": float(ext + 0.3 * atr), "score": 5 + strong,
+                            "lvl": float(lv), "mode": "fakeout",
+                            "why": f"اختراق وهمي فوق {z['kind']} {g(lv)} (القمة {g(ext)}) ثم رجوع تحت المنطقة برفض قوي"})
+        # اختراق وهمي للأسفل (دعم) -> شراء
+        lv = z["lo"]
+        pierce = [j for j in win if lo[j] < lv - tol]
+        if pierce:
+            ext = min(lo[j] for j in pierce)
+            wick_rej = any((min(cl[j], op[j]) - lo[j]) >= max(abs(cl[j] - op[j]), 0.3 * atr) and cl[j] > lv for j in pierce)
+            strong_back = cl[-1] > lv and cl[-1] > op[-1] and abs(cl[-1] - op[-1]) >= 0.5 * atr
+            if cl[-1] > lv + 0.1 * atr and (wick_rej or strong_back) and price - lv <= 1.5 * atr:
+                dg("fakeouts")
+                out.append({"name": "كسر وهمي → ارتداد", "dir": 1, "sl": float(ext - 0.3 * atr), "score": 5 + strong,
+                            "lvl": float(lv), "mode": "fakeout",
+                            "why": f"اختراق وهمي تحت {z['kind']} {g(lv)} (القاع {g(ext)}) ثم رجوع فوق المنطقة برفض قوي"})
+    return out
+
+
+def double_forming(d, price, atr, a15=0.0):
+    """قاع/قمة مزدوجة وهي عم تتشكل: لمسة تانية قرب الأولى + شمعة رفض، بدون انتظار كسر العنق"""
+    out = []
+    n = len(d)
+    if n < 60:
+        return out
+    hi, lo, cl, op = (d[c].values for c in ("High", "Low", "Close", "Open"))
+    H, L = swings(d, 2)
+    tol = max(0.35 * atr, 0.04 * a15)
+    g = lambda x: f"{x:.5g}"
+    rng_last = (hi[-1] - lo[-1]) or 1e-9
+    body = abs(cl[-1] - op[-1])
+    # قاع مزدوج -> شراء
+    w = lo[-4:]
+    cands = list(L[-3:]) + [(n - 4 + int(w.argmin()), float(w.min()))]
+    best = None
+    for ia, pa in cands:
+        for ib, pb in cands:
+            if 6 <= ib - ia <= 80 and abs(pa - pb) <= tol and n - 1 - ib <= 8:
+                best = (ia, pa, ib, pb)
+    if best:
+        ia, pa, ib, pb = best
+        ref = min(pa, pb)
+        neck = float(hi[ia:ib + 1].max())
+        rej = cl[-1] > op[-1] and ((cl[-1] - lo[-1]) / rng_last >= 0.6 or (min(cl[-1], op[-1]) - lo[-1]) >= body)
+        if neck - ref >= 1.5 * atr and price - ref <= 2.2 * atr and rej:
+            dg("dbl_forming")
+            out.append({"name": "قاع مزدوج (قيد التشكل)", "dir": 1, "sl": float(ref - 0.3 * atr), "score": 5,
+                        "lvl": float(ref), "mode": "forming",
+                        "why": f"لمستين عند ~{g(ref)} مع شمعة رفض صاعدة قبل كسر العنق ({g(neck)})"})
+    # قمة مزدوجة -> بيع
+    w = hi[-4:]
+    cands = list(H[-3:]) + [(n - 4 + int(w.argmax()), float(w.max()))]
+    best = None
+    for ia, pa in cands:
+        for ib, pb in cands:
+            if 6 <= ib - ia <= 80 and abs(pa - pb) <= tol and n - 1 - ib <= 8:
+                best = (ia, pa, ib, pb)
+    if best:
+        ia, pa, ib, pb = best
+        ref = max(pa, pb)
+        neck = float(lo[ia:ib + 1].min())
+        rej = cl[-1] < op[-1] and ((hi[-1] - cl[-1]) / rng_last >= 0.6 or (hi[-1] - max(cl[-1], op[-1])) >= body)
+        if ref - neck >= 1.5 * atr and ref - price <= 2.2 * atr and rej:
+            dg("dbl_forming")
+            out.append({"name": "قمة مزدوجة (قيد التشكل)", "dir": -1, "sl": float(ref + 0.3 * atr), "score": 5,
+                        "lvl": float(ref), "mode": "forming",
+                        "why": f"لمستين عند ~{g(ref)} مع شمعة رفض هابطة قبل كسر العنق ({g(neck)})"})
     return out
 
 
@@ -286,7 +389,9 @@ def scan(df, b4, b1d, crypto, levels=None, tf="5min", a15=0.0):
 
     near = NEAR_ATR15 * a15 if a15 else 25 * atr
     zl = find_zones(d, price, atr, levels, near)
-    out += breakout_engine(d, price, atr, zl)
+    out += breakout_engine(d, price, atr, zl, a15)
+    out += fakeout_engine(d, price, atr, zl, a15)
+    out += double_forming(d, price, atr, a15)
     if ENGINE != "zones":
         # 1) ارتداد من دعم/مقاومة (منطقة لُمست مرتين أو أكتر) مع شمعة رفض
         for z in zones:
@@ -303,6 +408,11 @@ def scan(df, b4, b1d, crypto, levels=None, tf="5min", a15=0.0):
         out += extra_setups(d, price, atr, H, L, tr)
         if levels:
             out += level_setups(d, price, atr, levels)
+
+    _r = (d["High"] - d["Low"]).values
+    if _r[-1] >= 3.0 * (float(_r[-41:-1].mean()) or 1e-9):   # آخر شمعة ضخمة (مثل الخبر): ننتظر ما بندخل معها
+        dg("news_candle_wait")
+        out = [x for x in out if x.get("mode") in ("fakeout", "retest")]
 
     # ---- التقييم (Confluence) ----
     hour = datetime.now(timezone.utc).hour
@@ -792,6 +902,21 @@ def tg(text):
 
 
 # ---------------- متابعة الصفقات: TP / SL / EARLY EXIT / BE ----------------
+def warn_text(t, side, sym, live, R, stage):
+    pip = PIPS.get(sym, 0.0001)
+    left = abs(live - t["sl"]) / pip
+    lv = t.get("lvl")
+    lv_txt = ""
+    if lv is not None:
+        held = (live > lv) if t["dir"] == 1 else (live < lv)
+        lv_txt = f"\nالمستوى {lv:.5g}: " + ("لسا صامد (السعر على جهتك)" if held else "السعر رجع عكسو (ضعف واضح)")
+    head = "⚠️ تحذير: الصفقة عم ترتد ضدك" if stage == 1 else "🔴 تحذير: السعر قريب من الستوب"
+    return (f"{head}\n{sym} ({side}) - {t['name']}\n"
+            f"الدخول: {t['entry']:.5g} | السعر الحالي: {live:.5g}\n"
+            f"قطع {min(100, max(0, -R * 100)):.0f}% من المسافة نحو الستوب، وباقي {left:.0f} بيب للستوب {t['sl']:.5g}.{lv_txt}\n\n"
+            f"شو تعمل: إذا بدك تقلل الخسارة سكّر هلأ. وإذا لسا مقتنع بالصفقة استنى الستوب (البوت لسا بيراقبها).")
+
+
 def check_open(st, m5s, frames, now, day):
     still = []
     for t in st["open"]:
@@ -839,19 +964,28 @@ def check_open(st, m5s, frames, now, day):
             gs[1] += 1; ss[1] += 1
             day["losses"] += 1
             day["r"] -= 1
-            tg(f"❌ ضرب الستوب\n{sym} ({side}) - {t['name']}\nالستوب {t['sl']:.5g}\nالبوت رجع يدوّر على Setup جديد.")
+            tg(f"❌ ضرب الستوب\n{sym} ({side}) - {t['name']}\nالستوب {t['sl']:.5g}\n"
+               + ("" if t.get("w1") else "ملاحظة: ما وصلك تحذير قبل الستوب لأنو الحركة كانت أسرع من فترة الفحص (5 دقايق).\n")
+               + "البوت رجع يدوّر على Setup جديد.")
         elif res == "EXPIRED":
             tg(f"⌛ انتهت الصفقة بدون نتيجة بعد {EXPIRE_BY_TF.get(t['tf'], EXPIRE_HOURS):.1f} ساعات\n{sym} ({side}) - {t['name']}\nالبوت رجع يدوّر على Setup جديد.")
         else:
-            fr = frames.get(sym, {}).get(t["tf"])
             reasons = []
-            if fr is not None and t.get("lvl") is not None and (fr["df"].index > t0).sum() >= 1:
-                lastc = fr["df"].iloc[-1]
-                fa = float(prep(fr["df"].iloc[-60:])["ATR"].iloc[-1])
-                if (t["dir"] == 1 and lastc["Close"] < t["lvl"] - 0.15 * fa) or (t["dir"] == -1 and lastc["Close"] > t["lvl"] + 0.15 * fa):
-                    reasons = [f"فشل الكسر/الاختبار: شمعة مكتملة أغلقت عكس المستوى {t['lvl']:.5g} (الكسر كان وهمي)"]
-            if not reasons and fr is not None and (fr["df"].index > t0).sum() >= 2:
-                reasons = reversal_reasons(fr, t, live)
+            for ftf in [t["tf"]] + (["5min"] if t["tf"] == "15min" else []):   # صفقات M15 بتنراقب كمان على M5 (أسرع)
+                fr = frames.get(sym, {}).get(ftf)
+                if fr is None:
+                    continue
+                if t.get("lvl") is not None and (fr["df"].index > t0).sum() >= 1:
+                    lastc = fr["df"].iloc[-1]
+                    fa = float(prep(fr["df"].iloc[-60:])["ATR"].iloc[-1])
+                    if (t["dir"] == 1 and lastc["Close"] < t["lvl"] - 0.15 * fa) or (t["dir"] == -1 and lastc["Close"] > t["lvl"] + 0.15 * fa):
+                        reasons = [f"شمعة مكتملة أغلقت عكس المستوى {t['lvl']:.5g} (المنطقة/النموذج انكسر ضدك)"]
+                        break
+                if (fr["df"].index > t0).sum() >= 2:
+                    rr_ = reversal_reasons(fr, t, live)
+                    if rr_:
+                        reasons = rr_
+                        break
             if reasons:
                 day["early"] += 1
                 day["r"] += R
@@ -867,6 +1001,12 @@ def check_open(st, m5s, frames, now, day):
                    f"سبب الإغلاق المقترح:\n- " + "\n- ".join(reasons) + "\n"
                    f"يُفضّل إغلاق الصفقة الآن. البوت سكّرها عندو وبيدوّر على Setup جديد.")
                 continue
+            if R <= -0.35 and not t.get("w1"):
+                t["w1"] = True
+                tg(warn_text(t, side, sym, live, R, 1))
+            if R <= -0.7 and not t.get("w2"):
+                t["w2"] = True
+                tg(warn_text(t, side, sym, live, R, 2))
             if R >= 1.0 and not t.get("be"):
                 t["be"] = True
                 tg(f"🛡️ {sym} ({side}) حققت {R:.1f}R\nانقل الستوب لسعر الدخول {t['entry']:.5g} لتأمين الصفقة.")
