@@ -64,6 +64,14 @@
      1
     ]
    }
+  },
+  "2026-10-02": {
+   "sent": 0,
+   "wins": 0,
+   "losses": 0,
+   "r": 0.0,
+   "summary": false,
+   "early": 0
   }
  },
  "last_signals": {},
@@ -79,26 +87,10 @@
   "XAU/USD|1min|Break & Retest مؤكد|1|2026-10-01T17:27:00": "2026-10-01T17:34:52.352019",
   "Z|XAU/USD|865|1|2026-10-01": "2026-10-01T17:34:52.352019"
  },
- "last_msg": "2026-10-01T21:05:41.658087",
+ "last_msg": "2026-10-02T06:15:16.841017",
  "direction": {},
  "startup": {
   "2026-09-30": "sent"
  },
- "diag": {
-  "zones": 2888,
-  "breaks": 1027,
-  "rt_level_lost": 402,
-  "break_weak": 244,
-  "setups": 183,
-  "build:الستوب المنطقي بعيد": 5,
-  "build:ستوب بالاتجاه الغلط": 34,
-  "rt_no_touch": 208,
-  "build:عائق قبل الهدف": 128,
-  "break_entry_weak": 6,
-  "rt_no_followthrough": 55,
-  "rt_no_rejection": 22,
-  "chase": 1,
-  "build:هدف قصير قبل منطقة": 7,
-  "rt_too_far": 3
- }
+ "diag": {}
 }
