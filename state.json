@@ -109,29 +109,10 @@
   "XAU/USD|1min|كسر وهمي → ارتداد|-1|2026-10-02T11:42:00": "2026-10-02T11:47:07.814230",
   "Z|XAU/USD|1161|-1|2026-10-02": "2026-10-02T11:47:07.814230"
  },
- "last_msg": "2026-10-02T12:00:12.798645",
+ "last_msg": "2026-10-02T16:18:38.792294",
  "direction": {},
  "startup": {
   "2026-09-30": "sent"
  },
- "diag": {
-  "zones": 2148,
-  "breaks": 895,
-  "rt_level_lost": 338,
-  "rt_no_touch": 182,
-  "rt_no_followthrough": 46,
-  "setups": 359,
-  "build:عائق قبل الهدف": 280,
-  "rt_no_rejection": 33,
-  "fakeouts": 115,
-  "break_weak": 177,
-  "build:ستوب بالاتجاه الغلط": 57,
-  "dbl_forming": 48,
-  "rt_strong_opposite": 7,
-  "build:هدف قصير قبل منطقة": 12,
-  "rt_too_far": 2,
-  "break_entry_weak": 2,
-  "news_candle_wait": 1,
-  "rt_violent_pullback": 3
- }
+ "diag": {}
 }
