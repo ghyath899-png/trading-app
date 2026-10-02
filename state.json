@@ -92,5 +92,20 @@
  "startup": {
   "2026-09-30": "sent"
  },
- "diag": {}
+ "diag": {
+  "zones": 163,
+  "breaks": 85,
+  "rt_level_lost": 31,
+  "rt_no_touch": 19,
+  "rt_no_followthrough": 6,
+  "setups": 29,
+  "build:عائق قبل الهدف": 16,
+  "rt_no_rejection": 3,
+  "fakeouts": 11,
+  "break_weak": 9,
+  "build:ستوب بالاتجاه الغلط": 7,
+  "dbl_forming": 1,
+  "rt_strong_opposite": 1,
+  "build:هدف قصير قبل منطقة": 6
+ }
 }
