@@ -1,4 +1,4 @@
-"""بوت XAU/USD على GitHub Actions: سكان M5+M15، صفقة واحدة، إدارة صفقة وخروج مبكر عند انعكاس قوي"""
+"""بوت XAU/USD على GitHub Actions: سكان M5+M15، صفقة واحدة، إدارة صفقة وخروج مبكر عند انعكاس قوي + محرك انعكاس M30 (REV / EARLY / SWING)"""
 import os
 import sys
 import json
@@ -33,7 +33,7 @@ FRAME_EXTRA = {"1min": 0, "5min": 0, "15min": 0}         # نقاط زيادة �
 STOP_ATR_FRAME = float(env("STOP_ATR_FRAME", "1.3"))  # أدنى ستوب = هالعدد × تذبذب الفريم (ATR)
 STOP_ATR_M15 = float(env("STOP_ATR_M15", "1.0"))      # وأدنى ستوب = هالعدد × تذبذب M15 (حتى صفقات M1/M5 ما ينضربوا بضجيج)
 SPREAD_PIPS = float(env("SPREAD_PIPS", "3"))          # سبريد تقريبي بيضيفو للستوب خلف المستويات
-TFN = {"1min": "M1", "5min": "M5", "15min": "M15"}
+TFN = {"1min": "M1", "5min": "M5", "15min": "M15", "30min": "M30"}
 MAX_PER_DAY = int(env("MAX_PER_DAY", "4"))     # أقصى عدد إشارات باليوم (0 = بدون حد)
 MAX_LOSSES = int(env("MAX_LOSSES", "3"))       # بعد هالعدد من الخسائر بيوقف لباقي اليوم (0 = بدون حد)
 COOLDOWN_MIN = int(env("COOLDOWN_MIN", "15"))   # أقل فاصل (دقايق) بين إشارتين لنفس الأداة
@@ -45,7 +45,33 @@ EXCELLENT_SCORE = float(env("EXCELLENT_SCORE", "9"))  # تقييم ممتازة
 GOOD_SCORE = float(env("GOOD_SCORE", "7"))            # تقييم جيدة
 MEDIUM_SCORE = float(env("MEDIUM_SCORE", "5"))        # تقييم متوسطة (وأقل منها ضعيفة بحجم صغير جداً)
 LOOKBACK = {"1min": 8, "5min": 3, "15min": 2}          # كم شمعة لورا بيفحص كل تشغيل (حتى ما تفوت إشارة بين تشغيلين)
-EXPIRE_BY_TF = {"1min": EXPIRE_HOURS * 0.4, "5min": EXPIRE_HOURS * 0.6, "15min": EXPIRE_HOURS}
+
+# ---------------- محرك الانعكاس (نفس منطق المؤشر) ----------------
+REV_ON = env("REV_ON", "1") == "1"                     # تشغيل/إيقاف محرك الانعكاس كله
+REV_WICK = float(env("REV_WICK", "0.40"))              # أقل نسبة ذيل لمدى الشمعة
+REV_RANGE_ATR = float(env("REV_RANGE_ATR", "0.8"))     # أقل مدى شمعة (x ATR)
+REV_SPIKE_ATR = float(env("REV_SPIKE_ATR", "1.5"))     # شمعة ضخمة (x ATR)
+REV_SWEEP = env("REV_SWEEP", "0") == "1"               # اشتراط سحب قمة/قاع سابق (الشموع الضخمة معفاة)
+REV_SWEEP_LEN = int(env("REV_SWEEP_LEN", "10"))
+REV_EXT = env("REV_EXT", "1") == "1"                   # بس عند أعلى/أدنى سعر بآخر N شمعة
+REV_EXT_LEN = int(env("REV_EXT_LEN", "20"))
+REV_FAIL = env("REV_FAIL", "1") == "1"                 # شمعة ضخمة ثم شمعة عكسية تسكر جوا جسمها
+REV_GAP = int(env("REV_GAP", "8"))                     # أقل فاصل (شموع M30) بين إشارتين بنفس الاتجاه والنوع
+REV_SKIP = env("REV_SKIP", "1") == "1"                 # SWING ما بيكرر قمة غطّاها REV/EARLY
+ES_ON = env("ES_ON", "1") == "1"                       # الإشارة المبكرة (Early Swing)
+ES_BODY = float(env("ES_BODY", "0.50"))                # أقل جسم للشمعة العكسية
+ES_BREAK = env("ES_BREAK", "0") == "1"                 # اشتراط إغلاق خلف قاع/قمة شمعة القمة
+SW_ON = env("SW_ON", "1") == "1"                       # Swing المؤكد
+SW_L = int(env("SW_L", "4"))
+SW_R = int(env("SW_R", "1"))                           # شمعة تأكيد بعد القمة (1 = الأسرع)
+SW_MIN_ATR = float(env("SW_MIN_ATR", "2.5"))           # أقل حجم حركة (x ATR)
+SW_LOOK = int(env("SW_LOOK", "20"))
+REV_MAX_SL_PIPS = float(env("REV_MAX_SL_PIPS", "150")) # أقصى ستوب (150 بيب = 15$)
+REV_CHASE_ATR = float(env("REV_CHASE_ATR", "1.0"))     # إذا السعر ابتعد أكتر من هيك بنتجاهل الإشارة (فاتت)
+REV_EXPIRE_HOURS = float(env("REV_EXPIRE_HOURS", "8"))
+BAR_SEC = 1800                                          # طول شمعة M30 بالثواني
+
+EXPIRE_BY_TF = {"1min": EXPIRE_HOURS * 0.4, "5min": EXPIRE_HOURS * 0.6, "15min": EXPIRE_HOURS, "30min": REV_EXPIRE_HOURS}
 STATE_FILE = "state.json"
 
 
@@ -517,12 +543,6 @@ def fmt(x, pip):
     return f"{x:.2f}" if pip >= 0.1 else f"{x:.5f}" if pip < 0.01 else f"{x:.3f}"
 
 
-
-
-
-
-
-
 # ---------------- استراتيجيات إضافية: Sweep+CHOCH، Range Breakout، نماذج فنية ----------------
 def extra_setups(d, price, atr, H, L, tr):
     out = []
@@ -832,6 +852,172 @@ def market_read(px, fr, lv, hour):
     return "\n".join(lines)
 
 
+# ---------------- محرك الانعكاس M30: REV + EARLY + SWING (نفس منطق المؤشر) ----------------
+def rev_plan(dr, px, a, live, sig_close, pip):
+    """خطة الدخول: بسعر السوق، الستوب خلف القمة/القاع، الأهداف ثابتة"""
+    if dr * (live - sig_close) > REV_CHASE_ATR * a:
+        return None   # السعر ابتعد (فاتت الإشارة)
+    sl = px - dr * (0.25 * a + SPREAD_PIPS * pip)
+    if (dr == 1 and sl >= live) or (dr == -1 and sl <= live):
+        return None   # السعر صار خلف الستوب
+    risk = abs(live - sl)
+    cap = REV_MAX_SL_PIPS * pip
+    if risk > cap:
+        risk, sl = cap, live - dr * cap
+    if risk < 0.5 * a:
+        risk, sl = 0.5 * a, live - dr * 0.5 * a
+    d1 = max(WANT_TP_PIPS, MIN_TP_PIPS) * pip
+    return {"entry": live, "sl": sl, "tp1": live + dr * d1, "tp2": live + dr * d1 * 1.5,
+            "risk_p": risk / pip, "tp1_p": d1 / pip}
+
+
+def rev_signals(d, sym, st, live, pip):
+    """بيفحص شموع M30 المكتملة الجديدة بس. أولوية: REV > EARLY > SWING (إشارة وحدة لكل شمعة)"""
+    n = len(d)
+    out = []
+    warm = max(REV_EXT_LEN, SW_LOOK, REV_SWEEP_LEN, SW_L + SW_R) + 3
+    if n < warm + 10:
+        return out
+    done = st["rv_done"].get(sym)
+    st["rv_done"][sym] = d.index[-1].isoformat()
+    if done:
+        dt = pd.Timestamp(done)
+        idxs = [i for i in range(max(n - 4, warm), n) if d.index[i] > dt]
+    else:
+        idxs = [n - 1]   # أول تشغيل: آخر شمعة بس (بدون إغراق بإشارات قديمة)
+    if not idxs:
+        return out
+
+    hi, lo, cl, op = (d[c].values for c in ("High", "Low", "Close", "Open"))
+    atr = prep(d)["ATR"].values
+    hN = d["High"].rolling(REV_EXT_LEN).max().values
+    lN = d["Low"].rolling(REV_EXT_LEN).min().values
+    hP = d["High"].rolling(REV_SWEEP_LEN).max().shift(1).values
+    lP = d["Low"].rolling(REV_SWEEP_LEN).min().shift(1).values
+    sH = d["High"].rolling(SW_LOOK).max().values
+    sL = d["Low"].rolling(SW_LOOK).min().values
+
+    def last_of(typ, dr):
+        return st["rv_last"].get(f"{sym}|{typ}|{dr}")
+
+    def gap_ok(typ, dr, ti, px, a):
+        L = last_of(typ, dr)
+        if not L:
+            return True
+        bars = (ti - pd.Timestamp(L["t"])).total_seconds() / BAR_SEC
+        return bars >= REV_GAP or (dr == -1 and px > L["px"] + 0.5 * a) or (dr == 1 and px < L["px"] - 0.5 * a)
+
+    def covered(typ, dr, ti, within):
+        L = last_of(typ, dr)
+        return bool(L) and 0 <= (ti - pd.Timestamp(L["t"])).total_seconds() / BAR_SEC <= within
+
+    for i in idxs:
+        a = float(atr[i])
+        if a != a or a <= 0:
+            continue
+        ti = d.index[i]
+        r = (hi[i] - lo[i]) or 1e-9
+        upr = (hi[i] - max(cl[i], op[i])) / r
+        lor = (min(cl[i], op[i]) - lo[i]) / r
+        mid1 = (op[i - 1] + cl[i - 1]) / 2
+        sel = None   # (نوع، اتجاه، أقصى سعر)
+
+        # ---- REV: ذيل طويل عند أعلى/أدنى سعر + شمعة ضخمة ثم انعكاس ----
+        if REV_ON:
+            big = r >= a * REV_RANGE_ATR
+            spike = r >= a * REV_SPIKE_ATR
+            wS = big and upr >= REV_WICK and (not REV_SWEEP or (hi[i] > hP[i] and cl[i] < hP[i]) or spike) and (not REV_EXT or hi[i] >= hN[i])
+            wB = big and lor >= REV_WICK and (not REV_SWEEP or (lo[i] < lP[i] and cl[i] > lP[i]) or spike) and (not REV_EXT or lo[i] <= lN[i])
+            fS = REV_FAIL and hi[i - 1] >= hN[i - 1] and (hi[i - 1] - lo[i - 1]) >= a * REV_SPIKE_ATR and cl[i] < op[i] and cl[i] < mid1
+            fB = REV_FAIL and lo[i - 1] <= lN[i - 1] and (hi[i - 1] - lo[i - 1]) >= a * REV_SPIKE_ATR and cl[i] > op[i] and cl[i] > mid1
+            px_s = hi[i] if wS else max(hi[i], hi[i - 1])
+            px_b = lo[i] if wB else min(lo[i], lo[i - 1])
+            s_ok = (wS or fS) and gap_ok("REV", -1, ti, px_s, a)
+            b_ok = (wB or fB) and gap_ok("REV", 1, ti, px_b, a)
+            if b_ok and s_ok:
+                sel = ("REV", 1 if lor >= upr else -1, px_b if lor >= upr else px_s)
+            elif b_ok:
+                sel = ("REV", 1, px_b)
+            elif s_ok:
+                sel = ("REV", -1, px_s)
+
+        # ---- EARLY: أول شمعة عكسية قوية بعد القمة/القاع ----
+        if not sel and ES_ON:
+            body = abs(cl[i] - op[i]) / r
+            eS = hi[i - 1] >= sH[i - 1] and hi[i - 1] - sL[i - 1] >= a * SW_MIN_ATR and cl[i] < op[i] and cl[i] < mid1 and body >= ES_BODY and (not ES_BREAK or cl[i] < lo[i - 1])
+            eB = lo[i - 1] <= sL[i - 1] and sH[i - 1] - lo[i - 1] >= a * SW_MIN_ATR and cl[i] > op[i] and cl[i] > mid1 and body >= ES_BODY and (not ES_BREAK or cl[i] > hi[i - 1])
+            pxs, pxb = max(hi[i], hi[i - 1]), min(lo[i], lo[i - 1])
+            eS = eS and not (REV_SKIP and covered("REV", -1, ti, 3)) and gap_ok("EARLY", -1, ti, pxs, a)
+            eB = eB and not (REV_SKIP and covered("REV", 1, ti, 3)) and gap_ok("EARLY", 1, ti, pxb, a)
+            if eS:
+                sel = ("EARLY", -1, pxs)
+            elif eB:
+                sel = ("EARLY", 1, pxb)
+
+        # ---- SWING: قمة/قاع مؤكد (بيتحدّث دايماً، وبيطلع إشارة إذا ما غطّاه REV/EARLY) ----
+        if SW_ON:
+            p = i - SW_R
+            if p - SW_L >= 0:
+                S = st["rv_sw"].setdefault(sym, {"type": 0, "px": None})
+                sw = None
+                if hi[p] >= hi[p - SW_L:p].max() and hi[p] > hi[p + 1:i + 1].max():
+                    if hi[p] - sL[i] >= a * SW_MIN_ATR and (S["type"] != 1 or S["px"] is None or hi[p] > S["px"] + 0.5 * a):
+                        if not (REV_SKIP and (covered("REV", -1, ti, SW_R + 2) or covered("EARLY", -1, ti, SW_R + 2))):
+                            sw = ("SWING", -1, float(hi[p]))
+                        S["type"], S["px"] = 1, float(hi[p])
+                if lo[p] <= lo[p - SW_L:p].min() and lo[p] < lo[p + 1:i + 1].min():
+                    if sH[i] - lo[p] >= a * SW_MIN_ATR and (S["type"] != -1 or S["px"] is None or lo[p] < S["px"] - 0.5 * a):
+                        if not sw and not (REV_SKIP and (covered("REV", 1, ti, SW_R + 2) or covered("EARLY", 1, ti, SW_R + 2))):
+                            sw = ("SWING", 1, float(lo[p]))
+                        S["type"], S["px"] = -1, float(lo[p])
+                if not sel and sw:
+                    sel = sw
+
+        if sel:
+            typ, dr, px = sel
+            plan = rev_plan(dr, float(px), a, live, float(cl[i]), pip)
+            if plan:
+                st["rv_last"][f"{sym}|{typ}|{dr}"] = {"t": ti.isoformat(), "px": float(px)}
+                out.append({"type": typ, "dir": dr, **plan})
+    return out
+
+
+def close_rev(st, o, live, rday):
+    """خروج على إشارة معاكسة"""
+    pip = PIPS.get(o["sym"], 0.0001)
+    side = "شراء" if o["dir"] == 1 else "بيع"
+    risk = abs(o["entry"] - o["sl"]) or 1e-9
+    R = o["dir"] * (live - o["entry"]) / risk
+    rday["early"] += 1
+    rday["r"] += R
+    if R > 0.05:
+        rday["wins"] += 1
+    elif R < -0.05:
+        rday["losses"] += 1
+    if o in st["rev_open"]:
+        st["rev_open"].remove(o)
+    tg(f"🔄 خروج — {o['sym']} ({side}) {o['name']}\nإشارة معاكسة | {R:+.2f}R | السعر {fmt(live, pip)}")
+
+
+def run_rev(st, sym, d30, df1, rday):
+    pip = PIPS.get(sym, 0.0001)
+    live = float(df1["Close"].iloc[-1])
+    for s in rev_signals(d30, sym, st, live, pip):
+        dr = s["dir"]
+        for o in [x for x in st["rev_open"] if x["sym"] == sym and x["dir"] == -dr]:
+            close_rev(st, o, live, rday)
+        side = "شراء 🟢" if dr == 1 else "بيع 🔴"
+        ic = {"REV": "⚡", "EARLY": "⏩", "SWING": "🔔"}.get(s["type"], "⚡")
+        tg(f"{ic} {side} — {sym} | {s['type']} M30\n"
+           f"الدخول: {fmt(s['entry'], pip)}\n"
+           f"SL: {fmt(s['sl'], pip)} ({s['risk_p']:.0f} بيب)\n"
+           f"TP1: {fmt(s['tp1'], pip)} | TP2: {fmt(s['tp2'], pip)}")
+        st["rev_open"].append({"sym": sym, "dir": dr, "entry": s["entry"], "sl": s["sl"], "tp1": s["tp1"], "tp2": s["tp2"],
+                               "rr": s["tp1_p"] / max(s["risk_p"], 1e-9), "name": s["type"], "tf": "30min",
+                               "time": df1.index[-1].isoformat(), "be": False, "gk": "REV", "lvl": None, "rv": True})
+        rday["sent"] += 1
+
+
 # ---------------- البيانات ----------------
 SENT = []
 LAST_ERR = {"msg": ""}
@@ -865,13 +1051,14 @@ def rs(df, rule):
 
 
 def make_frames(df, now, sym):
-    m5, m15, h1, h4 = (rs(df, r).iloc[:-1] for r in ("5min", "15min", "1h", "4h"))
+    m5, m15, m30, h1, h4 = (rs(df, r).iloc[:-1] for r in ("5min", "15min", "30min", "1h", "4h"))
     tr = lambda x, k: trend(x) if len(x) >= k else 0
     lv = gold_levels(df, now, 10.0 if sym == "XAU/USD" else 0.0)
     return {
         "1min": {"df": df.iloc[:-1].iloc[-700:], "b": (tr(m5, 60), tr(m15, 60)), "lv": lv},
         "5min": {"df": m5.iloc[-500:], "b": (tr(m15, 60), tr(h1, 60)), "lv": lv},
         "15min": {"df": m15.iloc[-350:], "b": (tr(h1, 60), tr(h4, 40)), "lv": lv},
+        "30min": {"df": m30.iloc[-500:], "b": (0, 0), "lv": lv},
     }
 
 
@@ -917,9 +1104,9 @@ def warn_text(t, side, sym, live, R, stage):
             f"شو تعمل: إذا بدك تقلل الخسارة سكّر هلأ. وإذا لسا مقتنع بالصفقة استنى الستوب (البوت لسا بيراقبها).")
 
 
-def check_open(st, m5s, frames, now, day):
+def check_open(st, key, m5s, frames, now, day):
     still = []
-    for t in st["open"]:
+    for t in st[key]:
         if not all(k in t for k in ("sym", "dir", "entry", "sl", "tp1", "time")):
             print("تم حذف صفقة قديمة ناقصة البيانات:", t)
             continue
@@ -933,6 +1120,8 @@ def check_open(st, m5s, frames, now, day):
             still.append(t)
             continue
         t.setdefault("tf", "15min")
+        rv = t.get("rv")
+        pip_ = PIPS.get(sym, 0.0001)
         t0 = pd.Timestamp(t["time"])
         res = None
         for _, c in df[df.index > t0].iterrows():
@@ -959,17 +1148,32 @@ def check_open(st, m5s, frames, now, day):
             gs[0] += 1; ss[0] += 1
             day["wins"] += 1
             day["r"] += t["rr"]
-            tg(f"✅ تحقق الهدف الأول\n{sym} ({side}) - {t['name']}\nانقل الستوب لسعر الدخول {t['entry']:.5g}، والهدف الثاني {t['tp2']:.5g}\nالبوت رجع يدوّر على Setup جديد.")
+            if rv:
+                tg(f"✅ TP1 — {sym} ({side}) {t['name']}\nانقل الستوب للدخول | TP2: {fmt(t['tp2'], pip_)}")
+            else:
+                tg(f"✅ تحقق الهدف الأول\n{sym} ({side}) - {t['name']}\nانقل الستوب لسعر الدخول {t['entry']:.5g}، والهدف الثاني {t['tp2']:.5g}\nالبوت رجع يدوّر على Setup جديد.")
         elif res == "SL":
             gs[1] += 1; ss[1] += 1
             day["losses"] += 1
             day["r"] -= 1
-            tg(f"❌ ضرب الستوب\n{sym} ({side}) - {t['name']}\nالستوب {t['sl']:.5g}\n"
-               + ("" if t.get("w1") else "ملاحظة: ما وصلك تحذير قبل الستوب لأنو الحركة كانت أسرع من فترة الفحص (5 دقايق).\n")
-               + "البوت رجع يدوّر على Setup جديد.")
+            if rv:
+                tg(f"❌ SL — {sym} ({side}) {t['name']}")
+            else:
+                tg(f"❌ ضرب الستوب\n{sym} ({side}) - {t['name']}\nالستوب {t['sl']:.5g}\n"
+                   + ("" if t.get("w1") else "ملاحظة: ما وصلك تحذير قبل الستوب لأنو الحركة كانت أسرع من فترة الفحص (5 دقايق).\n")
+                   + "البوت رجع يدوّر على Setup جديد.")
         elif res == "EXPIRED":
-            tg(f"⌛ انتهت الصفقة بدون نتيجة بعد {EXPIRE_BY_TF.get(t['tf'], EXPIRE_HOURS):.1f} ساعات\n{sym} ({side}) - {t['name']}\nالبوت رجع يدوّر على Setup جديد.")
+            if rv:
+                tg(f"⌛ انتهت — {sym} ({side}) {t['name']}")
+            else:
+                tg(f"⌛ انتهت الصفقة بدون نتيجة بعد {EXPIRE_BY_TF.get(t['tf'], EXPIRE_HOURS):.1f} ساعات\n{sym} ({side}) - {t['name']}\nالبوت رجع يدوّر على Setup جديد.")
         else:
+            if rv:   # صفقات الانعكاس: بس نقل ستوب عند 1R، والخروج بإشارة معاكسة (بالمحرك)
+                if R >= 1.0 and not t.get("be"):
+                    t["be"] = True
+                    tg(f"🛡️ {sym} ({side}) {R:.1f}R — انقل الستوب للدخول {fmt(t['entry'], pip_)}")
+                still.append(t)
+                continue
             reasons = []
             for ftf in [t["tf"]] + (["5min"] if t["tf"] == "15min" else []):   # صفقات M15 بتنراقب كمان على M5 (أسرع)
                 fr = frames.get(sym, {}).get(ftf)
@@ -1011,7 +1215,7 @@ def check_open(st, m5s, frames, now, day):
                 t["be"] = True
                 tg(f"🛡️ {sym} ({side}) حققت {R:.1f}R\nانقل الستوب لسعر الدخول {t['entry']:.5g} لتأمين الصفقة.")
             still.append(t)
-    st["open"] = still
+    st[key] = still
 
 
 # ---------------- التشغيل ----------------
@@ -1026,15 +1230,20 @@ def main():
     now = pd.Timestamp(datetime.now(timezone.utc).replace(tzinfo=None))
     today = now.strftime("%Y-%m-%d")
     st = load()
-    for k, dflt in (("open", []), ("days", {}), ("last", {}), ("sig", {})):
+    for k, dflt in (("open", []), ("days", {}), ("last", {}), ("sig", {}),
+                    ("rev_open", []), ("rv_done", {}), ("rv_last", {}), ("rv_sw", {})):
         if not isinstance(st.get(k), type(dflt)):
             st[k] = dflt
     day = st["days"].setdefault(today, {})
     for k, v in (("sent", 0), ("wins", 0), ("losses", 0), ("r", 0.0), ("summary", False), ("early", 0)):
         day.setdefault(k, v)
+    rday = day.setdefault("rv", {})
+    for k, v in (("sent", 0), ("wins", 0), ("losses", 0), ("r", 0.0), ("early", 0)):
+        rday.setdefault(k, v)
     for k in list(st["days"].keys())[:-14]:
         del st["days"][k]
     st["open"] = [t for t in st["open"] if isinstance(t, dict) and t.get("sym") in SYMBOLS]   # حذف الصفقات القديمة/المشوهة
+    st["rev_open"] = [t for t in st["rev_open"] if isinstance(t, dict) and t.get("sym") in SYMBOLS]
     st.setdefault("last_msg", now.isoformat())
 
     m5s = {}
@@ -1053,7 +1262,13 @@ def main():
         return
 
     frames = {sym: make_frames(df, now, sym) for sym, df in m5s.items()}
-    check_open(st, m5s, frames, now, day)
+    check_open(st, "open", m5s, frames, now, day)
+    check_open(st, "rev_open", m5s, frames, now, rday)
+
+    # محرك الانعكاس: قناة منفصلة بدون حدود الإشارات اليومية/الجلسة/الصفقة الواحدة
+    if REV_ON:
+        for sym in m5s:
+            run_rev(st, sym, frames[sym]["30min"]["df"], m5s[sym], rday)
 
     reason = "ما في Setup مطابق حالياً"
     if MAX_LOSSES and day["losses"] >= MAX_LOSSES:
@@ -1153,7 +1368,9 @@ def main():
         tg(f"📊 ملخص {today} (UTC)\nإشارات: {day['sent']} | رابحة: {day['wins']} | "
            f"خاسرة: {day['losses']} | خروج مبكر: {day['early']} | صافي: {day['r']:+.1f}R\n"
            + "حسب التقييم: " + (" | ".join(f"{k} {v[0]}✅/{v[1]}❌" for k, v in day.get("g", {}).items()) or "لا يوجد")
-           + "\nحسب الاستراتيجية: " + (" | ".join(f"{k} {v[0]}✅/{v[1]}❌" for k, v in day.get("s", {}).items()) or "لا يوجد"))
+           + "\nحسب الاستراتيجية: " + (" | ".join(f"{k} {v[0]}✅/{v[1]}❌" for k, v in day.get("s", {}).items()) or "لا يوجد")
+           + f"\n⚡ الانعكاس: إشارات {rday['sent']} | ✅ {rday['wins']} | ❌ {rday['losses']} | خروج {rday['early']} | صافي {rday['r']:+.1f}R"
+           + "\nحسب النوع: " + (" | ".join(f"{k} {v[0]}✅/{v[1]}❌" for k, v in rday.get("s", {}).items()) or "لا يوجد"))
         day["summary"] = True
 
     print("DIAG", DIAG)
