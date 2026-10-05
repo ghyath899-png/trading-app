@@ -1,21 +1,5 @@
 {
- "open": [
-  {
-   "sym": "XAU/USD",
-   "dir": 1,
-   "entry": 4164.65742,
-   "sl": 4155.800500236032,
-   "tp1": 4177.942799645951,
-   "tp2": 4184.5854894689255,
-   "rr": 1.5,
-   "name": "سحب سيولة قمة آسيا",
-   "tf": "15min",
-   "time": "2026-10-05T09:32:00",
-   "be": false,
-   "gk": "جيدة",
-   "lvl": null
-  }
- ],
+ "open": [],
  "days": {
   "2026-09-30": {
    "sent": 2,
@@ -108,25 +92,25 @@
   "2026-10-05": {
    "sent": 3,
    "wins": 1,
-   "losses": 0,
-   "r": 1.209646287861791,
+   "losses": 1,
+   "r": 0.5066479356208057,
    "summary": false,
-   "early": 0,
+   "early": 1,
    "rv": {
     "sent": 1,
-    "wins": 0,
+    "wins": 1,
     "losses": 0,
-    "r": 0.0,
+    "r": 2.021617306279398,
     "early": 0,
     "g": {
      "REV": [
-      0,
+      1,
       0
      ]
     },
     "s": {
      "SWING": [
-      0,
+      1,
       0
      ]
     }
@@ -135,12 +119,20 @@
     "ممتازة": [
      1,
      0
+    ],
+    "جيدة": [
+     0,
+     1
     ]
    },
    "s": {
     "كسر وهمي → ارتداد": [
      1,
      0
+    ],
+    "سحب سيولة قمة آسيا": [
+     0,
+     1
     ]
    }
   }
@@ -157,51 +149,34 @@
   "Z|XAU/USD|1140|1|2026-10-05": "2026-10-05T07:52:36.734004",
   "XAU/USD|15min|سحب سيولة قمة آسيا|1|2026-10-05T09:15:00": "2026-10-05T09:34:18.470296"
  },
- "last_msg": "2026-10-05T09:34:18.470296",
+ "last_msg": "2026-10-05T09:53:41.221343",
  "direction": {},
  "startup": {
   "2026-09-30": "sent"
  },
  "diag": {
-  "zones": 618,
-  "breaks": 234,
-  "rt_level_lost": 52,
-  "rt_no_touch": 73,
-  "fakeouts": 25,
-  "setups": 87,
-  "build:هدف قصير قبل منطقة": 18,
+  "zones": 792,
+  "breaks": 258,
+  "rt_level_lost": 53,
+  "rt_no_touch": 90,
+  "fakeouts": 27,
+  "setups": 99,
+  "build:هدف قصير قبل منطقة": 21,
   "rt_no_rejection": 7,
   "rt_no_followthrough": 16,
   "dbl_forming": 9,
   "build:ستوب بالاتجاه الغلط": 10,
   "chase": 2,
-  "break_weak": 41,
-  "build:عائق قبل الهدف": 53,
+  "break_weak": 44,
+  "build:عائق قبل الهدف": 61,
   "break_entry_weak": 5,
   "news_spike_wait": 1,
   "rt_too_far": 1,
   "news_spike": 1,
-  "news_candle_wait": 1,
+  "news_candle_wait": 2,
   "rt_strong_opposite": 2
  },
- "rev_open": [
-  {
-   "sym": "XAU/USD",
-   "dir": -1,
-   "entry": 4168.17197,
-   "sl": 4173.118504623017,
-   "tp1": 4158.17197,
-   "tp2": 4153.17197,
-   "rr": 2.021617306279398,
-   "name": "SWING",
-   "tf": "30min",
-   "time": "2026-10-05T09:08:00",
-   "be": false,
-   "gk": "REV",
-   "lvl": null,
-   "rv": true
-  }
- ],
+ "rev_open": [],
  "rv_done": {
   "XAU/USD": "2026-10-05T09:00:00"
  },
