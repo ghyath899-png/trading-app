@@ -155,20 +155,20 @@
   "2026-09-30": "sent"
  },
  "diag": {
-  "zones": 792,
-  "breaks": 258,
-  "rt_level_lost": 53,
-  "rt_no_touch": 90,
-  "fakeouts": 27,
-  "setups": 99,
-  "build:هدف قصير قبل منطقة": 21,
+  "zones": 971,
+  "breaks": 282,
+  "rt_level_lost": 55,
+  "rt_no_touch": 91,
+  "fakeouts": 28,
+  "setups": 107,
+  "build:هدف قصير قبل منطقة": 25,
   "rt_no_rejection": 7,
   "rt_no_followthrough": 16,
   "dbl_forming": 9,
   "build:ستوب بالاتجاه الغلط": 10,
   "chase": 2,
-  "break_weak": 44,
-  "build:عائق قبل الهدف": 61,
+  "break_weak": 63,
+  "build:عائق قبل الهدف": 65,
   "break_entry_weak": 5,
   "news_spike_wait": 1,
   "rt_too_far": 1,
@@ -178,7 +178,7 @@
  },
  "rev_open": [],
  "rv_done": {
-  "XAU/USD": "2026-10-05T09:00:00"
+  "XAU/USD": "2026-10-05T09:30:00"
  },
  "rv_last": {
   "XAU/USD|SWING|-1": {
