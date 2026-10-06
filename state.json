@@ -156,7 +156,7 @@
    "summary": false,
    "early": 0,
    "rv": {
-    "sent": 0,
+    "sent": 1,
     "wins": 2,
     "losses": 0,
     "r": 1.5137843536841888,
@@ -193,36 +193,53 @@
   "XAU/USD|15min|سحب سيولة قمة آسيا|1|2026-10-05T09:15:00": "2026-10-05T09:34:18.470296",
   "XAU/USD|15min|Sweep + CHOCH بيع|-1|2026-10-05T10:30:00": "2026-10-05T11:07:49.198638"
  },
- "last_msg": "2026-10-06T06:15:29.870125",
+ "last_msg": "2026-10-06T07:02:03.842655",
  "direction": {},
  "startup": {
   "2026-09-30": "sent"
  },
  "diag": {
-  "zones": 1468,
-  "breaks": 393,
-  "rt_level_lost": 84,
-  "rt_no_touch": 121,
-  "fakeouts": 40,
-  "setups": 167,
+  "zones": 1633,
+  "breaks": 441,
+  "rt_level_lost": 98,
+  "rt_no_touch": 129,
+  "fakeouts": 44,
+  "setups": 182,
   "build:هدف قصير قبل منطقة": 31,
-  "rt_no_rejection": 14,
-  "rt_no_followthrough": 17,
-  "dbl_forming": 17,
+  "rt_no_rejection": 15,
+  "rt_no_followthrough": 20,
+  "dbl_forming": 19,
   "build:ستوب بالاتجاه الغلط": 12,
   "chase": 2,
-  "break_weak": 93,
-  "build:عائق قبل الهدف": 116,
+  "break_weak": 111,
+  "build:عائق قبل الهدف": 131,
   "break_entry_weak": 5,
   "news_spike_wait": 1,
   "rt_too_far": 1,
   "news_spike": 1,
   "news_candle_wait": 3,
-  "rt_strong_opposite": 5
+  "rt_strong_opposite": 8
  },
- "rev_open": [],
+ "rev_open": [
+  {
+   "sym": "XAU/USD",
+   "dir": 1,
+   "entry": 4132.00538,
+   "sl": 4117.00538,
+   "tp1": 4142.00538,
+   "tp2": 4147.00538,
+   "rr": 0.6666666666666666,
+   "name": "SWING",
+   "tf": "30min",
+   "time": "2026-10-06T07:00:00",
+   "be": false,
+   "gk": "REV",
+   "lvl": null,
+   "rv": true
+  }
+ ],
  "rv_done": {
-  "XAU/USD": "2026-10-06T06:00:00"
+  "XAU/USD": "2026-10-06T06:30:00"
  },
  "rv_last": {
   "XAU/USD|SWING|-1": {
@@ -230,8 +247,8 @@
    "px": 4170.60439
   },
   "XAU/USD|SWING|1": {
-   "t": "2026-10-05T14:00:00",
-   "px": 4131.37781
+   "t": "2026-10-06T06:30:00",
+   "px": 4114.88766
   },
   "XAU/USD|REV|1": {
    "t": "2026-10-05T15:00:00",
@@ -245,7 +262,7 @@
  "rv_sw": {
   "XAU/USD": {
    "type": -1,
-   "px": 4125.41139
+   "px": 4114.88766
   }
  }
 }
