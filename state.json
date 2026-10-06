@@ -1,5 +1,21 @@
 {
- "open": [],
+ "open": [
+  {
+   "sym": "XAU/USD",
+   "dir": 1,
+   "entry": 4152.03394,
+   "sl": 4144.727685579967,
+   "tp1": 4162.99332163005,
+   "tp2": 4168.473012445074,
+   "rr": 1.5,
+   "name": "Break & Retest مؤكد",
+   "tf": "1min",
+   "time": "2026-10-06T08:55:00",
+   "be": false,
+   "gk": "ممتازة",
+   "lvl": 4150.5576
+  }
+ ],
  "days": {
   "2026-09-30": {
    "sent": 2,
@@ -149,7 +165,7 @@
    }
   },
   "2026-10-06": {
-   "sent": 1,
+   "sent": 2,
    "wins": 1,
    "losses": 0,
    "r": 1.5,
@@ -199,35 +215,37 @@
  "last_signals": {},
  "last_startup": "",
  "last": {
-  "XAU/USD": "2026-10-06T07:43:10.026924"
+  "XAU/USD": "2026-10-06T08:57:32.722009"
  },
  "sig": {
   "XAU/USD|15min|سحب سيولة قمة آسيا|1|2026-10-05T09:15:00": "2026-10-05T09:34:18.470296",
   "XAU/USD|15min|Sweep + CHOCH بيع|-1|2026-10-05T10:30:00": "2026-10-05T11:07:49.198638",
   "XAU/USD|1min|قاع مزدوج (قيد التشكل)|1|2026-10-06T07:38:00": "2026-10-06T07:43:10.026924",
-  "Z|XAU/USD|1242|1|2026-10-06": "2026-10-06T07:43:10.026924"
+  "Z|XAU/USD|1242|1|2026-10-06": "2026-10-06T07:43:10.026924",
+  "XAU/USD|1min|Break & Retest مؤكد|1|2026-10-06T08:51:00": "2026-10-06T08:57:32.722009",
+  "Z|XAU/USD|1250|1|2026-10-06": "2026-10-06T08:57:32.722009"
  },
- "last_msg": "2026-10-06T08:41:30.425073",
+ "last_msg": "2026-10-06T08:57:32.722009",
  "direction": {},
  "startup": {
   "2026-09-30": "sent"
  },
  "diag": {
-  "zones": 2100,
-  "breaks": 545,
-  "rt_level_lost": 126,
-  "rt_no_touch": 167,
-  "fakeouts": 54,
-  "setups": 219,
-  "build:هدف قصير قبل منطقة": 32,
-  "rt_no_rejection": 17,
-  "rt_no_followthrough": 24,
-  "dbl_forming": 24,
+  "zones": 2286,
+  "breaks": 596,
+  "rt_level_lost": 150,
+  "rt_no_touch": 179,
+  "fakeouts": 62,
+  "setups": 251,
+  "build:هدف قصير قبل منطقة": 42,
+  "rt_no_rejection": 18,
+  "rt_no_followthrough": 25,
+  "dbl_forming": 26,
   "build:ستوب بالاتجاه الغلط": 16,
   "chase": 2,
-  "break_weak": 128,
-  "build:عائق قبل الهدف": 162,
-  "break_entry_weak": 5,
+  "break_weak": 131,
+  "build:عائق قبل الهدف": 166,
+  "break_entry_weak": 6,
   "news_spike_wait": 1,
   "rt_too_far": 1,
   "news_spike": 3,
