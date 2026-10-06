@@ -175,6 +175,10 @@
      "EARLY": [
       1,
       0
+     ],
+     "SWING": [
+      0,
+      0
      ]
     }
    }
@@ -199,25 +203,25 @@
   "2026-09-30": "sent"
  },
  "diag": {
-  "zones": 1633,
-  "breaks": 441,
-  "rt_level_lost": 98,
-  "rt_no_touch": 129,
-  "fakeouts": 44,
-  "setups": 182,
-  "build:هدف قصير قبل منطقة": 31,
-  "rt_no_rejection": 15,
-  "rt_no_followthrough": 20,
+  "zones": 1766,
+  "breaks": 493,
+  "rt_level_lost": 111,
+  "rt_no_touch": 152,
+  "fakeouts": 49,
+  "setups": 196,
+  "build:هدف قصير قبل منطقة": 32,
+  "rt_no_rejection": 16,
+  "rt_no_followthrough": 23,
   "dbl_forming": 19,
-  "build:ستوب بالاتجاه الغلط": 12,
+  "build:ستوب بالاتجاه الغلط": 14,
   "chase": 2,
-  "break_weak": 111,
-  "build:عائق قبل الهدف": 131,
+  "break_weak": 114,
+  "build:عائق قبل الهدف": 142,
   "break_entry_weak": 5,
   "news_spike_wait": 1,
   "rt_too_far": 1,
-  "news_spike": 1,
-  "news_candle_wait": 3,
+  "news_spike": 3,
+  "news_candle_wait": 4,
   "rt_strong_opposite": 8
  },
  "rev_open": [
