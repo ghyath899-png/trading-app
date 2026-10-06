@@ -1,6 +1,6 @@
 """بوت الذهب XAU/USD على GitHub Actions
-مناطق دعم/مقاومة قوية فقط على M15: ارتداد، سحب سيولة، كسر، إعادة اختبار
-تأكيد من H1 وH4، تنبيه تسكير عند الانعكاس وأنت بربح، ورسالة واضحة عند الهدف الأول"""
+مناطق دعم/مقاومة قوية على M15: ارتداد، سحب سيولة، كسر، إعادة اختبار
+ستوب دقيق مبني على الهيكل السعري والسيولة، أهداف منطقية ومدروسة"""
 import os
 import sys
 import json
@@ -30,10 +30,10 @@ TG_TOKEN = env("TELEGRAM_BOT_TOKEN")
 TG_CHAT = env("TELEGRAM_CHAT_ID")
 SYMBOLS = [s.strip() for s in env("SYMBOLS", "XAU/USD").split(",") if s.strip()]
 PIPS = {"XAU/USD": 0.1, "GBP/JPY": 0.01, "USD/JPY": 0.01, "EUR/USD": 0.0001, "GBP/USD": 0.0001, "BTC/USD": 1.0}
-USE_M1 = env("USE_M1", "1") == "1"            # شموع الدقيقة لمتابعة الأهداف بدقة (طلب API إضافي)
+USE_M1 = env("USE_M1", "1") == "1"            # شموع الدقيقة لمتابعة الأهداف بدقة
 
 # ---- المناطق ----
-ZONE_HISTORY = envi("ZONE_HISTORY", 2000)     # عدد شموع M15 لبناء المناطق
+ZONE_HISTORY = envi("ZONE_HISTORY", 2000)     
 PIV_LEN = envi("PIV_LEN", 6)
 MERGE_ATR = envf("MERGE_ATR", 0.6)
 MAXH_ATR = envf("MAXH_ATR", 1.2)
@@ -43,48 +43,48 @@ REACT_BARS = envi("REACT_BARS", 40)
 BIG_REACT = envf("BIG_REACT", 4.0)
 TOUCH_GAP = envi("TOUCH_GAP", 6)
 BRK_ATR = envf("BRK_ATR", 0.30)
-MIN_ZONE_SCORE = envi("MIN_ZONE_SCORE", 7)    # 7 = ★★ ، 12 = ★★★
+MIN_ZONE_SCORE = envi("MIN_ZONE_SCORE", 6)    
 PSY_STEP = envf("PSY_STEP", 10.0)
 PSY_MAJOR = envf("PSY_MAJOR", 50.0)
 H1_PIV = envi("H1_PIV", 4)
 H1_HISTORY = envi("H1_HISTORY", 1000)
-H1_MIN_SCORE = envi("H1_MIN_SCORE", 7)
+H1_MIN_SCORE = envi("H1_MIN_SCORE", 5)
 
 # ---- الإشارات ----
 TOL_ATR = envf("TOL_ATR", 0.15)
-PIERCE_ATR = envf("PIERCE_ATR", 0.40)         # ذيل عادي تحت/فوق المنطقة
+PIERCE_ATR = envf("PIERCE_ATR", 0.40)         
 SW_MIN = envf("SW_MIN", 0.10)
-SW_MAX = envf("SW_MAX", 2.5)                  # أعمق من هيك = كسر حقيقي
+SW_MAX = envf("SW_MAX", 2.5)                  
 WICK_MIN = envf("WICK_MIN", 0.40)
 BODY_MIN = envf("BODY_MIN", 0.45)
 MIN_RANGE_ATR = envf("MIN_RANGE_ATR", 0.5)
 BRK_BUF = envf("BRK_BUF", 0.15)
 BRK_BODY = envf("BRK_BODY", 0.50)
 BRK_RANGE = envf("BRK_RANGE", 0.8)
-SPIKE_ATR = envf("SPIKE_ATR", 4.0)            # شمعة أكبر من هيك = خبر، ما بندخل معها
+SPIKE_ATR = envf("SPIKE_ATR", 4.0)            
 RETEST_BARS = envi("RETEST_BARS", 16)
 RETEST_RUN = envf("RETEST_RUN", 0.5)
 RETEST_TOUCH = envf("RETEST_TOUCH", 0.35)
-MIN_CONFIRM = envi("MIN_CONFIRM", 2)          # من 3: الساعة، 4 ساعات، منطقة الساعة
+MIN_CONFIRM = envi("MIN_CONFIRM", 1)          
 
-# ---- الصفقة ----
-STOP_BUF_ATR = envf("STOP_BUF_ATR", 0.30)
-MIN_RISK_ATR = envf("MIN_RISK_ATR", 1.0)
-MAX_RISK_ATR = envf("MAX_RISK_ATR", 3.0)
+# ---- إعدادات الصفقة والستوب الدقيق ----
+STOP_BUF_ATR = envf("STOP_BUF_ATR", 0.25)     # هامش أمان محسوب فوق/تحت نقطة الارتكاز الهيكلي
+MIN_RISK_ATR = envf("MIN_RISK_ATR", 0.8)      # الحد الأدنى المنطقي للستوب حتى لا يضرب بالأسبريد
+MAX_RISK_ATR = envf("MAX_RISK_ATR", 2.5)      # الحد الأقصى للستوب لضمان عدم تضخم المخاطرة
 SPREAD_PIPS = envf("SPREAD_PIPS", 3)
-TP1_R = envf("TP1_R", 1.0)
-TP2_R = envf("TP2_R", 2.0)
-MIN_ROOM_R = envf("MIN_ROOM_R", 1.3)
+TP1_R = envf("TP1_R", 1.0)                    # الهدف الأول 1:1 مضمون ومدروس
+TP2_R = envf("TP2_R", 2.0)                    # الهدف الثاني 1:2 مبني على الهيكل
+MIN_ROOM_R = envf("MIN_ROOM_R", 0.9)          # السماح بالمساحات المقبولة للوصول للأهداف
 
 # ---- حدود وتنبيهات ----
-MAX_PER_DAY = envi("MAX_PER_DAY", 6)
+MAX_PER_DAY = envi("MAX_PER_DAY", 8)          
 MAX_LOSSES = envi("MAX_LOSSES", 3)
 SESSION_ON = env("SESSION_ON", "1") == "1"
 SESSION_START = envi("SESSION_START", 7)
 SESSION_END = envi("SESSION_END", 20)
 MAX_AGE_MIN = envi("MAX_AGE_MIN", 40)
 LOOKBACK = envi("LOOKBACK", 2)
-ZONE_LOCK_HOURS = envf("ZONE_LOCK_HOURS", 3)
+ZONE_LOCK_HOURS = envf("ZONE_LOCK_HOURS", 1.0) 
 EXPIRE_HOURS = envf("EXPIRE_HOURS", 8)
 MIN_PROFIT_R = envf("MIN_PROFIT_R", 0.4)
 REV_MIN_REASONS = envi("REV_MIN_REASONS", 2)
@@ -204,7 +204,6 @@ def pivots(d, L):
 
 
 def build_zones(d, atr, keys, piv):
-    """مناطق من قمم وقيعان حقيقية: لمسات، ارتدادات، دور (دعم/مقاومة)، انكسار، قوة"""
     n = len(d)
     if not atr or atr != atr or atr <= 0 or n < 2 * piv + 20:
         return []
@@ -284,7 +283,7 @@ def h1_overlap(z, h1z, atr):
     return False
 
 
-# ---------------- كشف الإشارات (الشمعة الأخيرة في win، والمناطق مبنية قبلها) ----------------
+# ---------------- كشف الإشارات ----------------
 def detect(win, zones, atr):
     out = []
     n = len(win)
@@ -318,7 +317,6 @@ def detect(win, zones, atr):
             continue
         recent = age is not None and age <= RETEST_BARS
 
-        # ---- إعادة اختبار بعد كسر ----
         if recent:
             k = z["lfi"]
             if z["lfd"] == 1 and z["role"] == 1:
@@ -337,7 +335,7 @@ def detect(win, zones, atr):
                         ["كسر المنطقة لتحت ثم رجع اختبرها ورُفض منها", f"شمعة رفض هابطة (ذيل علوي {up_w / rng * 100:.0f}%)"])
             continue
 
-        if z["role"] == 1:     # دعم
+        if z["role"] == 1:
             ext = float(l[max(0, i - 2):i + 1].min())
             pierce = bot - ext
             if SW_MIN * atr <= pierce <= SW_MAX * atr and pierce > PIERCE_ATR * atr and c[i] > bot and bull and big \
@@ -355,7 +353,7 @@ def detect(win, zones, atr):
                     and BRK_RANGE * atr <= rng <= SPIKE_ATR * atr:
                 add("BREAK", "كسر دعم قوي", -1, z, top,
                     [f"إغلاق شمعة قوية تحت الدعم (جسم {body / rng * 100:.0f}%)"])
-        else:                  # مقاومة
+        else:
             ext = float(h[max(0, i - 2):i + 1].max())
             pierce = ext - top
             if SW_MIN * atr <= pierce <= SW_MAX * atr and pierce > PIERCE_ATR * atr and c[i] < top and bear and big \
@@ -376,18 +374,30 @@ def detect(win, zones, atr):
     return out
 
 
-# ---------------- خطة الصفقة ----------------
+# ---------------- حساب خطة الصفقة والستوب الدقيق ----------------
 def make_plan(s, live, atr, pip, zones):
     dr, z = s["dir"], s["zone"]
-    sl = s["anchor"] - dr * (STOP_BUF_ATR * atr + SPREAD_PIPS * pip)
-    if (dr == 1 and sl >= live) or (dr == -1 and sl <= live):
+    
+    # حساب الستوب الدقيق بناءً على الـ Anchor (القمة/القاع أو سحب السيولة) مع هامش الأمان والأسبريد
+    base_sl = s["anchor"] - dr * (STOP_BUF_ATR * atr + SPREAD_PIPS * pip)
+    
+    # ضمان عدم وقوع الستوب بالاتجاه الخاطئ
+    if (dr == 1 and base_sl >= live) or (dr == -1 and base_sl <= live):
         return None, "stop_wrong_side"
-    risk = abs(live - sl)
-    floor = MIN_RISK_ATR * atr
-    if risk < floor:
-        sl, risk = live - dr * floor, floor
-    if risk > MAX_RISK_ATR * atr:
+        
+    risk = abs(live - base_sl)
+    
+    # فلترة الستوب ليكون منطقياً (لا قريب جداً ولا بعيد جداً)
+    min_risk = MIN_RISK_ATR * atr
+    max_risk = MAX_RISK_ATR * atr
+    
+    if risk < min_risk:
+        base_sl = live - dr * min_risk
+        risk = min_risk
+    elif risk > max_risk:
         return None, "risk_far"
+
+    # التحقق من المساحة المتاحة والهدف بناءً على المناطق المقابلة
     edge = None
     for o_ in zones:
         if o_ is z or o_["score"] < MIN_ZONE_SCORE:
@@ -399,12 +409,19 @@ def make_plan(s, live, atr, pip, zones):
         else:
             continue
         edge = e if edge is None else min(edge, e)
+        
     if edge is not None and edge < MIN_ROOM_R * risk:
         return None, "no_room"
-    tp1d, tp2d = TP1_R * risk, TP2_R * risk
+
+    # تحديد الأهداف المنطقية
+    tp1d = TP1_R * risk
+    tp2d = TP2_R * risk
+    
+    # إذا كانت المنطقة المقابلة قريبة، نجعل الهدف الثاني يتوافق معها بذكاء
     if edge is not None and edge - 0.1 * atr < tp2d:
         tp2d = max(edge - 0.1 * atr, 1.2 * risk)
-    return {"entry": live, "sl": sl, "tp1": live + dr * tp1d, "tp2": live + dr * tp2d,
+
+    return {"entry": live, "sl": base_sl, "tp1": live + dr * tp1d, "tp2": live + dr * tp2d,
             "risk": risk, "r1": tp1d / risk, "r2": tp2d / risk}, ""
 
 
@@ -522,7 +539,7 @@ def entry_msg(c, sym, pip):
             f"النوع: {c['name']}\n"
             f"المنطقة: {zdesc(z, pip)}\n\n"
             f"الدخول: {fmt(p['entry'], pip)}\n"
-            f"الستوب: {fmt(p['sl'], pip)} ({dist_txt(p['risk'], pip, sym)})\n"
+            f"الستوب (محسوب بدقة): {fmt(p['sl'], pip)} ({dist_txt(p['risk'], pip, sym)})\n"
             f"الهدف 1: {fmt(p['tp1'], pip)} (+{p['r1']:.1f}R)\n"
             f"الهدف 2: {fmt(p['tp2'], pip)} (+{p['r2']:.1f}R)\n\n"
             f"التأكيد ({c['n_ok']}/3):\n" + "\n".join(c["conf"]) + "\n\n"
@@ -533,7 +550,6 @@ def entry_msg(c, sym, pip):
 
 # ---------------- متابعة الصفقات ----------------
 def track(t, ctx):
-    """بيعيد حساب الصفقة من الدخول: المرحلة (0/1/2) والنتيجة (SL/BE/TP2/None). الستوب أولاً إذا تزامن (تحفظاً)"""
     t0 = pd.Timestamp(t["time"])
     df1, df15 = ctx["df1"], ctx["df15"]
     if df1 is not None and len(df1):
@@ -651,7 +667,6 @@ def manage(st, sym, ctx, cands, now, day):
             tg(f"⌛ انتهت الصفقة بدون هدف أو ستوب بعد {EXPIRE_HOURS:g} ساعات — {sym} ({side})\nالنتيجة عند السعر الحالي: {rr:+.1f}R")
             continue
 
-        # تنبيه التسكير: بس وهي بربح
         stg = t.get("stage", 0)
         if (r_now >= MIN_PROFIT_R) or (stg >= 1 and r_now > 0.1):
             reasons = reversal_reasons(t, ctx, cands)
@@ -713,7 +728,6 @@ def zones_text(ctx):
     return "\n".join(lines) if lines else "ما في مناطق قوية قريبة"
 
 
-# ---------------- التشغيل ----------------
 def main():
     if not TD_KEY:
         print("TWELVE_DATA_API_KEY غير موجود")
@@ -728,7 +742,7 @@ def main():
     for k, dflt in (("open", []), ("days", {}), ("sig", {})):
         if not isinstance(st.get(k), type(dflt)):
             st[k] = dflt
-    st["open"] = [t for t in st["open"] if isinstance(t, dict) and t.get("v") == 2 and t.get("sym") in SYMBOLS]
+    st["open"] = [t for t in st["open"] if isinstance(t, dict) and t.get("v") == 2 and t.get("sym"] in SYMBOLS]
     day = st["days"].setdefault(today, {})
     for k, v in (("sent", 0), ("wins", 0), ("losses", 0), ("r", 0.0), ("summary", False)):
         day.setdefault(k, v)
