@@ -742,7 +742,13 @@ def main():
     for k, dflt in (("open", []), ("days", {}), ("sig", {})):
         if not isinstance(st.get(k), type(dflt)):
             st[k] = dflt
-    st["open"] = [t for t in st["open"] if isinstance(t, dict) and t.get("v") == 2 and t.get("sym"] in SYMBOLS]
+    
+    # [تم التصحيح هنا] إغلاق الأقواس بشكل صحيح لتفادي خطأ الـ SyntaxError
+    st["open"] = [
+        t for t in st["open"] 
+        if isinstance(t, dict) and t.get("v") == 2 and t.get("sym") in SYMBOLS
+    ]
+    
     day = st["days"].setdefault(today, {})
     for k, v in (("sent", 0), ("wins", 0), ("losses", 0), ("r", 0.0), ("summary", False)):
         day.setdefault(k, v)
