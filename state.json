@@ -336,6 +336,15 @@
      "losses": 0
     }
    }
+  },
+  "2026-10-14": {
+   "sent": 0,
+   "wins": 0,
+   "losses": 0,
+   "r": 0.0,
+   "summary": false,
+   "t": {},
+   "ps": {}
   }
  },
  "last_signals": {},
