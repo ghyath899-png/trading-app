@@ -19,14 +19,6 @@
   }
  ],
  "days": {
-  "2026-10-08": {
-   "sent": 0,
-   "wins": 0,
-   "losses": 0,
-   "r": 0.0,
-   "summary": true,
-   "t": {}
-  },
   "2026-10-09": {
    "sent": 2,
    "wins": 0,
@@ -385,6 +377,20 @@
     },
     "EUR/USD": {
      "sent": 1,
+     "losses": 0
+    }
+   }
+  },
+  "2026-10-26": {
+   "sent": 0,
+   "wins": 0,
+   "losses": 0,
+   "r": 0.0,
+   "summary": false,
+   "t": {},
+   "ps": {
+    "XAU/USD": {
+     "sent": 0,
      "losses": 0
     }
    }
