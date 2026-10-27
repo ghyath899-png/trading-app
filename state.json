@@ -1,19 +1,6 @@
 {
  "open": [],
  "days": {
-  "2026-10-09": {
-   "sent": 2,
-   "wins": 0,
-   "losses": 1,
-   "r": -1.0,
-   "summary": true,
-   "t": {
-    "ارتداد": [
-     0,
-     1
-    ]
-   }
-  },
   "2026-10-12": {
    "sent": 3,
    "wins": 4,
@@ -391,6 +378,24 @@
     "EUR/USD": {
      "sent": 4,
      "losses": 2
+    }
+   }
+  },
+  "2026-10-27": {
+   "sent": 0,
+   "wins": 0,
+   "losses": 0,
+   "r": 0.0,
+   "summary": false,
+   "t": {},
+   "ps": {
+    "XAU/USD": {
+     "sent": 0,
+     "losses": 0
+    },
+    "EUR/USD": {
+     "sent": 0,
+     "losses": 0
     }
    }
   }
