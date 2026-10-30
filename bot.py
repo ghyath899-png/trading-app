@@ -88,8 +88,8 @@ ACC_PIERCE = envf("ACC_PIERCE", 0.15)
 ACC_SCORE = envi("ACC_SCORE", 7)
 ACC_BONUS = envi("ACC_BONUS", 20)             # أفضلية لسيناريو التجميع
 
-# ---- اندفاع ثم تراجع (مطفي افتراضياً) ----
-PB_ON = env("PB_ON", "0") == "1"
+# ---- اندفاع ثم تراجع مع الاتجاه (شغّال) ----
+PB_ON = env("PB_ON", "1") == "1"
 IMP_ATR = envf("IMP_ATR", 1.6)
 IMP_MAX_ATR = envf("IMP_MAX_ATR", 4.0)
 IMP_BODY = envf("IMP_BODY", 0.60)
@@ -116,7 +116,7 @@ MAX_LOSSES = envi("MAX_LOSSES", 2)
 SESSION_ON = env("SESSION_ON", "0") == "1"
 SESSION_START = envi("SESSION_START", 7)
 SESSION_END = envi("SESSION_END", 20)
-QUIET_ON = env("QUIET_ON", "1") == "1"        # بالساعات الهادية بنطلب تأكيد كامل (3/3)
+QUIET_ON = env("QUIET_ON", "0") == "1"        # بالساعات الهادية بنطلب تأكيد كامل (3/3)
 QUIET_START = envi("QUIET_START", 21)         # UTC
 QUIET_END = envi("QUIET_END", 7)              # UTC (لندن بتفتح تقريباً 7 UTC)
 MAX_AGE_MIN = envi("MAX_AGE_MIN", 40)
