@@ -447,7 +447,7 @@
    "wins": 0,
    "losses": 0,
    "r": 0.0,
-   "summary": false,
+   "summary": true,
    "t": {},
    "ps": {
     "XAU/USD": {
@@ -464,7 +464,7 @@
   "XAU/USD": "2026-10-06T09:18:01.899949"
  },
  "sig": {},
- "last_msg": "2026-11-03T17:44:08.275260",
+ "last_msg": "2026-11-03T22:32:52.098818",
  "direction": {},
  "startup": {
   "2026-09-30": "sent"
