@@ -42,6 +42,17 @@ B.DIAG_LABELS.update({
 B.BOT_VERSION = "2026-11-04-sessions"
 
 
+_SEEN = set()
+
+
+def _fd(key, sym, name, today):
+    """عدّاد القمع: مرة وحدة لكل مستوى بكل يوم (عشان ما نعدّ نفس الإشارة كل 5 دقايق)"""
+    ident = (key, sym, name, today)
+    if ident not in _SEEN:
+        _SEEN.add(ident)
+        B.dg(key)
+
+
 # ---------------- المستويات ----------------
 def _rng(m5c, day0, a, b, min_n):
     idx = m5c.index
@@ -151,23 +162,23 @@ def session_cands(ctx, m5c, now, live):
                 break
         if not s:
             continue
-        B.dg("ses_raw")
+        _fd("ses_raw", sym, name, today)
         h1ok, h4ok = ctx["h1d"] == dr, ctx["h4d"] == dr
         zok = B.near_zone(L, ctx["zones"], atr)
         n_ok = int(h1ok) + int(h4ok) + int(zok)
         if n_ok < SES_CONFIRM:
-            B.dg("ses_no_confirm")
+            _fd("ses_no_confirm", sym, name, today)
             continue
         cand = {"kind": eng, "dir": dr, "zone": None, "anchor": s["ext"]}
         swings = list(ctx["swings"]) + ([opp] if opp is not None else [])
         plan, why = B.make_plan(cand, live, atr, pip, ctx["zones"], B.SPREADS.get(sym, B.SPREAD_PIPS), ctx["keys"],
                                 swings, B.MIN_TP_PIPS.get(sym, 0.0) * pip, B.MIN_TP1_PIPS.get(sym, 0.0) * pip)
         if plan is None:
-            B.dg(why)
+            _fd(why, sym, name, today)
             continue
         moved = dr * (live - s["ci"])
         if moved > 0.4 * plan["risk"] or moved < -0.5 * plan["risk"]:
-            B.dg("chase")
+            _fd("chase", sym, name, today)
             continue
         up = side == "high"
         miss = ([] if h1ok else ["اتجاه الساعة"]) + ([] if h4ok else ["اتجاه 4 ساعات"]) + ([] if zok else ["منطقة قوية عند المستوى"])
@@ -259,7 +270,7 @@ def sim_trade(cand, m5, t_entry):
     return "EXP", (r_now if stage == 0 else part * r1 + (1 - part) * r_now), limit
 
 
-def backtest(sym, df15, df5, now, days):
+def backtest(sym, df15, df5, now, days, cache=None):
     m5all = B.closed(df5, 5, now)
     start = m5all.index[-1].normalize() - pd.Timedelta(days=days)
     pos = np.flatnonzero(m5all.index >= start)
@@ -279,7 +290,12 @@ def backtest(sym, df15, df5, now, days):
             continue
         m5c = m5all.iloc[:kp + 1]
         if ctx is None or (t_end - ctx_t) >= pd.Timedelta(minutes=60):
-            ctx = B.build_ctx(sym, df15, m5c, t_end)
+            if cache is not None and t_end in cache:
+                ctx = cache[t_end]
+            else:
+                ctx = B.build_ctx(sym, df15, m5c, t_end)
+                if cache is not None:
+                    cache[t_end] = ctx
             ctx_t = t_end
         if ctx is None:
             continue
@@ -327,6 +343,51 @@ def summarize(trades, ndays, days):
     return "\n".join(out)
 
 
+GRID = [
+    ("الحالي", {}),
+    ("MSS 3 شموع", {"S.MSS_BARS": 3}),
+    ("MSS شمعتين", {"S.MSS_BARS": 2}),
+    ("قبول أوسع خلف المستوى", {"S.ACCEPT": 0.6}),
+    ("نافذة سحب أطول", {"S.SW_LOOK": 24}),
+    ("بدون شرط اتجاه", {"S.SES_CONFIRM": 0}),
+    ("أهداف أقرب (2$/1.5$)", {"TP": (20, 15)}),
+    ("ستوب أوسع", {"B.MAX_RISK_ATR": 3.5}),
+    ("نوافذ وقت أوسع", {"S.A_START": 6, "S.A_END": 13, "S.N_START": 12, "S.N_END": 19}),
+    ("متوسط", {"S.MSS_BARS": 3, "S.ACCEPT": 0.5, "S.SW_LOOK": 18}),
+    ("مرن", {"S.MSS_BARS": 2, "S.ACCEPT": 0.6, "S.SW_LOOK": 24, "S.SES_CONFIRM": 0, "B.MAX_RISK_ATR": 3.5, "TP": (20, 15)}),
+]
+_MODS = {"S": sys.modules[__name__], "B": B}
+
+
+def _apply(cfg):
+    old = []
+    for k, v in cfg.items():
+        if k == "TP":
+            for d, val in ((B.MIN_TP_PIPS, v[0]), (B.MIN_TP1_PIPS, v[1])):
+                for sk in list(d.keys()):
+                    old.append((d, sk, d[sk], True))
+                    d[sk] = float(val)
+        else:
+            m, nm = k.split(".")
+            old.append((_MODS[m], nm, getattr(_MODS[m], nm), False))
+            setattr(_MODS[m], nm, v)
+    return old
+
+
+def _restore(old):
+    for tgt, nm, val, is_dict in reversed(old):
+        if is_dict:
+            tgt[nm] = val
+        else:
+            setattr(tgt, nm, val)
+
+
+def _stats(ts):
+    w = sum(1 for x in ts if x["R"] > 0.05)
+    lo = sum(1 for x in ts if x["R"] < -0.05)
+    return len(ts), w, lo, (100 * w / (w + lo) if (w + lo) else 0), sum(x["R"] for x in ts)
+
+
 def run_backtest():
     now = pd.Timestamp(datetime.now(timezone.utc).replace(tzinfo=None))
     msgs = []
@@ -338,9 +399,25 @@ def run_backtest():
         if df15 is None or df5 is None or len(df15) < 600 or len(df5) < 600:
             msgs.append(f"{sym}: ما قدرت أجيب بيانات كافية ({B.LAST_ERR['msg']})")
             continue
-        trades, nd = backtest(sym, df15, df5, now, BT_DAYS)
-        msgs.append(f"▪️ {sym}\n" + summarize(trades, nd, BT_DAYS))
-    B.tg("\n\n".join(msgs) + "\n\n(تقدير تاريخي: مو ضمان للمستقبل. المحركات القديمة ما انحسبت هون، نتايجها الحقيقية عندك بالملخص اليومي.)")
+        cache = {}
+        lines, funnels = [], []
+        for name, cfg in GRID:
+            old = _apply(cfg)
+            B.DIAG.clear()
+            _SEEN.clear()
+            try:
+                trades, nd = backtest(sym, df15, df5, now, BT_DAYS, cache)
+            finally:
+                _restore(old)
+            n, w, lo, wr, tot = _stats(trades)
+            lines.append(f"{name}: {n} صفقة ({n / max(nd, 1):.1f}/يوم) | ✅{w} ❌{lo} | نجاح {wr:.0f}% | {tot:+.1f}R")
+            d = B.DIAG
+            rej = sum(d.get(k, 0) for k in ("no_room", "risk_far", "rr_low", "stop_wrong_side"))
+            funnels.append(f"{name}: خام {d.get('ses_raw', 0)} ← رفض تأكيد {d.get('ses_no_confirm', 0)} "
+                           f"← رفض خطة {rej} ← مطاردة {d.get('chase', 0)} ← دخول {n}")
+        msgs.append(f"▪️ {sym} — Backtest آخر {BT_DAYS} يوم ({nd} يوم تداول)\n\nالإعدادات:\n" + "\n".join(lines)
+                    + "\n\nالقمع (كم مستوى مختلف وصل لكل مرحلة):\n" + "\n".join(funnels[:1] + funnels[-1:]))
+    B.tg("\n\n".join(msgs) + "\n\n(تقدير تاريخي على عينة صغيرة: مو ضمان للمستقبل)")
 
 
 def run():
