@@ -474,6 +474,24 @@
     "raw": 1,
     "no_room": 1
    }
+  },
+  "2026-11-05": {
+   "sent": 0,
+   "wins": 0,
+   "losses": 0,
+   "r": 0.0,
+   "summary": false,
+   "t": {},
+   "ps": {
+    "XAU/USD": {
+     "sent": 0,
+     "losses": 0
+    }
+   },
+   "diag": {
+    "raw": 1,
+    "no_room": 1
+   }
   }
  },
  "last_signals": {},
@@ -482,7 +500,7 @@
   "XAU/USD": "2026-10-06T09:18:01.899949"
  },
  "sig": {},
- "last_msg": "2026-11-04T22:51:11.081258",
+ "last_msg": "2026-11-05T02:54:01.745787",
  "direction": {},
  "startup": {
   "2026-09-30": "sent"
