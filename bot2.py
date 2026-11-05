@@ -15,7 +15,7 @@ import pandas as pd
 import bot as B
 
 # ---------------- الإعدادات (كلها قابلة للتغيير من الـ workflow) ----------------
-SES_ON = B.env("SES_ON", "1") == "1"
+SES_ON = B.env("SES_ON", "0") == "1"      # محركات الجلسات مطفية (نتايج الـBacktest ما كانت مقنعة)
 A_START = B.envi("A_START", 7)            # نافذة آسيا->لندن (UTC)
 A_END = B.envi("A_END", 12)
 N_START = B.envi("N_START", 13)           # نافذة لندن/أمس->نيويورك (UTC)
@@ -33,13 +33,36 @@ SES_BONUS = B.envi("SES_BONUS", 30)
 M5_SIZE = B.envi("M5_SIZE", 1000)
 BT_DAYS = B.envi("BT_DAYS", 14)
 
-KIND_NAMES = {"ASIA": "سحب آسيا/أمس عند لندن", "NYSW": "سحب لندن/أمس عند نيويورك"}
+# ---- استراتيجية الهايكن (انسحاب): انعكاس + شمعة تأكيد بدون ذيل، عند منطقة انعكاس أو بعد ارتداد منها ----
+HA_ON = B.env("HA_ON", "1") == "1"
+HA_MIN_RUN = B.envi("HA_MIN_RUN", 2)             # أقل عدد شموع عكسية قبل الانعكاس
+HA_WICK_TOL = B.envf("HA_WICK_TOL", 0.05)        # أكبر ذيل مسموح (من حجم الشمعة) لتعتبر "بدون ذيل"
+HA_ZONE_LOOK = B.envi("HA_ZONE_LOOK", 8)         # كم شمعة 15د لورا نفتش عن لمسة منطقة (2 ساعة)
+HA_ZONE_SCORE = B.envi("HA_ZONE_SCORE", 5)       # أقل قوة منطقة
+HA_PIERCE_ATR = B.envf("HA_PIERCE_ATR", 1.2)     # أقصى تجاوز للمنطقة مسموح (x ATR)
+HA_MIN_TP_PIPS = B.envf("HA_MIN_TP_PIPS", 100)   # أقل مسافة للهدف (100 بيب = 10$)
+HA_MIN_RR = B.envf("HA_MIN_RR", 1.2)
+HA_MIN_RISK_ATR = B.envf("HA_MIN_RISK_ATR", 0.5)
+HA_MAX_RISK_ATR = B.envf("HA_MAX_RISK_ATR", 3.5)
+HA_MAX_AGE = B.envi("HA_MAX_AGE", 25)            # أقصى عمر لشمعة التأكيد بالدقايق
+HA_TREND = B.env("HA_TREND", "0") == "1"         # 1 = بس مع اتجاه الساعة أو 4 ساعات
+HA_EXIT_ON = B.env("HA_EXIT_ON", "1") == "1"     # تنبيه تسكير عند شمعة بذيلين
+HA_EXIT_WICK = B.envf("HA_EXIT_WICK", 0.12)
+HA_EXIT_MIN_R = B.envf("HA_EXIT_MIN_R", 0.3)
+KEEP_KINDS = {x.strip().upper() for x in B.env("KEEP_KINDS", "SWEEP").split(",") if x.strip()}
+
+KEY_AR = {"PDH": "قمة أمس", "PDL": "قاع أمس", "PWH": "قمة الأسبوع الماضي", "PWL": "قاع الأسبوع الماضي",
+          "PMH": "قمة الشهر الماضي", "PML": "قاع الشهر الماضي"}
+KIND_NAMES = {"ASIA": "سحب آسيا/أمس عند لندن", "NYSW": "سحب لندن/أمس عند نيويورك", "HA": "هايكن انعكاس"}
 B.KIND_AR.update(KIND_NAMES)
 B.DIAG_LABELS.update({
     "ses_raw": "جلسات: سحب + كسر هيكل مكتشف",
     "ses_no_confirm": "جلسات: مرفوض لعدم التأكيد (ضد الاتجاه وبدون منطقة)",
+    "ha_raw": "هايكن: انعكاس + شمعة تأكيد بدون ذيل مكتشف",
+    "ha_no_zone": "هايكن: مرفوض (مو عند منطقة انعكاس ولا بعد ارتداد)",
+    "ha_counter_trend": "هايكن: مرفوض (ضد الاتجاه)",
 })
-B.BOT_VERSION = "2026-11-04-sessions"
+B.BOT_VERSION = "2026-11-05-heikin"
 
 
 _SEEN = set()
@@ -194,6 +217,196 @@ def session_cands(ctx, m5c, now, live):
     return out
 
 
+
+# ---------------- استراتيجية الهايكن ----------------
+def ha_candles(d, n_use=800):
+    w = d.iloc[-n_use:]
+    o, h, l, c = (w[k].values.astype(float) for k in ("Open", "High", "Low", "Close"))
+    hc = (o + h + l + c) / 4.0
+    ho = np.empty(len(w))
+    ho[0] = (o[0] + c[0]) / 2.0
+    for i in range(1, len(w)):
+        ho[i] = (ho[i - 1] + hc[i - 1]) / 2.0
+    hh = np.maximum(h, np.maximum(ho, hc))
+    hl = np.minimum(l, np.minimum(ho, hc))
+    return pd.DataFrame({"HO": ho, "HH": hh, "HL": hl, "HC": hc}, index=w.index)
+
+
+def ha_signal(d, off):
+    """شموع حمراء -> أول شمعة خضراء (انعكاس) -> شمعة تأكيد خضراء بدون ذيل سفلي = شراء. العكس للبيع.
+    الشمعة k هي شمعة التأكيد (آخر مغلقة، أو قبلها بواحدة إذا off=1). المفتاح "k" بالنتيجة = موضعها بـ d نفسو"""
+    ha = ha_candles(d)
+    n = len(ha)
+    k = n - 1 - off
+    if k < HA_MIN_RUN + 3:
+        return None
+    gaps = np.diff(ha.index.values[k - HA_MIN_RUN - 2:k + 1]).astype("timedelta64[m]").astype(np.int64)
+    if (gaps > 30).any():                       # فجوة سوق (إغلاق يومي/أسبوعي) = الشموع مو متتالية
+        return None
+    HO, HH, HL, HC = (ha[x].values for x in ("HO", "HH", "HL", "HC"))
+    bull, bear = HC > HO, HC < HO
+    r = HH[k] - HL[k]
+    if r <= 0:
+        return None
+    if bull[k] and bull[k - 1] and all(bear[k - 2 - j] for j in range(HA_MIN_RUN)):
+        if (min(HO[k], HC[k]) - HL[k]) <= HA_WICK_TOL * r:
+            run = 0
+            while k - 2 - run >= 0 and bear[k - 2 - run] and run < 30:
+                run += 1
+            return {"dir": 1, "k": len(d) - 1 - off, "anchor": float(HL[k - 2]), "run": run}
+    if bear[k] and bear[k - 1] and all(bull[k - 2 - j] for j in range(HA_MIN_RUN)):
+        if (HH[k] - max(HO[k], HC[k])) <= HA_WICK_TOL * r:
+            run = 0
+            while k - 2 - run >= 0 and bull[k - 2 - run] and run < 30:
+                run += 1
+            return {"dir": -1, "k": len(d) - 1 - off, "anchor": float(HH[k - 2]), "run": run}
+    return None
+
+
+def ha_zone_touch(ctx, d, k, dr):
+    """هل الانعكاس صار عند منطقة/مستوى قوي، أو بعد ارتداد منها خلال آخر HA_ZONE_LOOK شمعة؟"""
+    atr = ctx["atr"]
+    w = d.iloc[max(0, k - HA_ZONE_LOOK + 1):k + 1]
+    ext = float(w["Low"].min()) if dr == 1 else float(w["High"].max())
+    cl = float(d["Close"].iloc[k])
+    pip = ctx["pip"]
+
+    def hit_zone(z):
+        if dr == 1:
+            return ext <= z["top"] + 0.3 * atr and ext >= z["bot"] - HA_PIERCE_ATR * atr and cl > z["bot"]
+        return ext >= z["bot"] - 0.3 * atr and ext <= z["top"] + HA_PIERCE_ATR * atr and cl < z["top"]
+
+    for z in ctx["zones"]:
+        if z["score"] >= HA_ZONE_SCORE and hit_zone(z):
+            return f"منطقة {B.fmt(z['bot'], pip)} – {B.fmt(z['top'], pip)} {'★' * z['stars']}", z["mid"]
+    for z in ctx.get("h1z") or []:
+        if z["score"] >= B.H1_MIN_SCORE and hit_zone(z):
+            return f"منطقة فريم الساعة {B.fmt(z['bot'], pip)} – {B.fmt(z['top'], pip)}", z["mid"]
+    for nm, kv in (ctx.get("keys") or {}).items():
+        z = {"top": kv, "bot": kv}
+        if hit_zone(z):
+            return f"{KEY_AR.get(nm, nm)} ({B.fmt(kv, pip)})", kv
+    return None, None
+
+
+def ha_plan(ctx, sig, live):
+    dr, atr, pip, sym = sig["dir"], ctx["atr"], ctx["pip"], ctx["sym"]
+    spread = B.SPREADS.get(sym, B.SPREAD_PIPS)
+    sl = sig["anchor"] - dr * (0.1 * atr + spread * pip)
+    if (dr == 1 and sl >= live) or (dr == -1 and sl <= live):
+        return None, "stop_wrong_side", ""
+    risk = abs(live - sl)
+    floor = HA_MIN_RISK_ATR * atr
+    if risk < floor:
+        sl, risk = live - dr * floor, floor
+    if risk > HA_MAX_RISK_ATR * atr:
+        return None, "risk_far", ""
+    buf = 0.1 * atr
+    need = max(HA_MIN_TP_PIPS * pip, HA_MIN_RR * risk)
+    lv = []                                        # (مسافة، وصف) لأقرب مستويات قدام السعر
+    for z in ctx["zones"]:
+        if z["score"] >= HA_ZONE_SCORE:
+            d_ = ((z["bot"] if dr == 1 else z["top"]) - live) * dr
+            if d_ > 0:
+                lv.append((d_, f"منطقة {B.fmt(z['bot'], pip)} – {B.fmt(z['top'], pip)}"))
+    for z in ctx.get("h1z") or []:
+        if z["score"] >= B.H1_MIN_SCORE:
+            d_ = ((z["bot"] if dr == 1 else z["top"]) - live) * dr
+            if d_ > 0:
+                lv.append((d_, f"منطقة فريم الساعة {B.fmt(z['bot'], pip)} – {B.fmt(z['top'], pip)}"))
+    for nm, kv in (ctx.get("keys") or {}).items():
+        d_ = (kv - live) * dr
+        if d_ > 0:
+            lv.append((d_, f"{KEY_AR.get(nm, nm)} ({B.fmt(kv, pip)})"))
+    ok = [x for x in lv if x[0] - buf >= need]
+    if ok:
+        d_, desc = min(ok)
+        tp_d, note = d_ - buf, f"الهدف: أقرب مستوى — {desc}"
+    else:
+        tp_d, note = max(2.0 * risk, need), "ما في مستوى واضح قدام السعر، الهدف 2R"
+    tp = live + dr * tp_d
+    return {"entry": live, "sl": sl, "tp1": tp, "tp2": tp, "tp": tp, "be": tp, "risk": risk, "tp1_d": tp_d,
+            "tp_d": tp_d, "rr1": tp_d / risk, "rr": tp_d / risk}, "", note
+
+
+def ha_cands(ctx, off, now):
+    if not HA_ON:
+        return []
+    d = ctx["d15c"]
+    sig = ha_signal(d, off)
+    if not sig:
+        return []
+    k, dr = sig["k"], sig["dir"]
+    sym, atr = ctx["sym"], ctx["atr"]
+    ctime = d.index[k].isoformat()
+    if (now - (d.index[k] + pd.Timedelta(minutes=15))).total_seconds() / 60 > HA_MAX_AGE:
+        return []
+    _fd("ha_raw", sym, ctime, "")
+    if HA_TREND and ctx["h1d"] != dr and ctx["h4d"] != dr:
+        _fd("ha_counter_trend", sym, ctime, "")
+        return []
+    zdesc, zmid = ha_zone_touch(ctx, d, k, dr)
+    if not zdesc:
+        _fd("ha_no_zone", sym, ctime, "")
+        return []
+    live = ctx["live"]
+    plan, why, note = ha_plan(ctx, sig, live)
+    if plan is None:
+        _fd(why, sym, ctime, "")
+        return []
+    ci = float(d["Close"].iloc[k])
+    moved = dr * (live - ci)
+    if moved > 0.4 * plan["risk"] or moved < -0.5 * plan["risk"]:
+        _fd("chase", sym, ctime, "")
+        return []
+    buy = dr == 1
+    return [{
+        "kind": "HA", "dir": dr, "zone": None, "anchor": sig["anchor"], "ci": ci, "info": "", "area": None,
+        "name": f"هايكن انعكاس ({'شراء' if buy else 'بيع'}) عند منطقة/ارتداد", "off": off, "plan": plan, "atr": atr,
+        "n_ok": None, "miss": [], "quiet": False, "rank": 350,
+        "why": [f"هايكن 15 دقيقة: {sig['run']} شموع {'هابطة' if buy else 'صاعدة'} ثم شمعة {'صاعدة' if buy else 'هابطة'} (انعكاس)، "
+                f"وبعدها شمعة تأكيد {'صاعدة بدون ذيل سفلي' if buy else 'هابطة بدون ذيل علوي'}",
+                f"الانعكاس عند {zdesc}",
+                f"الستوب {'تحت قاع' if buy else 'فوق قمة'} آخر شمعة {'هابطة' if buy else 'صاعدة'}",
+                note],
+        "key": f"{sym}|HA|{dr}|{ctime}", "zk": f"H|{sym}|{dr}|{int(round(zmid / max(atr, ctx['pip'])))}"}]
+
+
+def ha_exit(st, sym, ctx, now, day):
+    """تنبيه تسكير: شمعة هايكن بذيلين (فوق وتحت) وإنت بربح = ضعف بالاتجاه"""
+    if not HA_EXIT_ON:
+        return
+    d = ctx["d15c"]
+    if len(d) < 50:
+        return
+    ha = None
+    still = []
+    for t in st["open"]:
+        if t.get("sym") != sym or not str(t.get("name", "")).startswith("هايكن"):
+            still.append(t)
+            continue
+        if d.index[-1] < pd.Timestamp(t["time"]).ceil("15min") or \
+                (now - (d.index[-1] + pd.Timedelta(minutes=15))).total_seconds() / 60 > 20:
+            still.append(t)
+            continue
+        if ha is None:
+            ha = ha_candles(d)
+        HO, HH, HL, HC = (float(ha[x].iloc[-1]) for x in ("HO", "HH", "HL", "HC"))
+        r = HH - HL
+        up_w, lo_w = HH - max(HO, HC), min(HO, HC) - HL
+        r_now = t["dir"] * (ctx["live"] - t["entry"]) / t["risk"]
+        if r > 0 and up_w >= HA_EXIT_WICK * r and lo_w >= HA_EXIT_WICK * r and r_now >= HA_EXIT_MIN_R:
+            B.book(t, r_now, day)
+            side = "شراء" if t["dir"] == 1 else "بيع"
+            gain = abs(ctx["live"] - t["entry"])
+            B.tg(f"⚠️ سكّر هلأ — {sym} ({side})\n"
+                 f"طلعت شمعة هايكن بذيلين (ضعف) وإنت بربح {B.dist_txt(gain, ctx['pip'], sym)} ({r_now:+.1f}R)\n"
+                 f"البوت سكّرها عندو وبيدوّر على فرصة جديدة.")
+            continue
+        still.append(t)
+    st["open"] = still
+
+
 # ---------------- رسالة الدخول (بتشمل السيناريو والسبب) ----------------
 def entry_msg2(c, sym, pip):
     p = c["plan"]
@@ -204,9 +417,12 @@ def entry_msg2(c, sym, pip):
     lines += ["- " + w for w in (c.get("why") or [])]
     lines += ["",
               f"الدخول: {B.fmt(p['entry'], pip)}",
-              f"الستوب: {B.fmt(p['sl'], pip)} ({B.dist_txt(p['risk'], pip, sym)})",
-              f"الهدف الأول: {B.fmt(p['tp1'], pip)} ({B.dist_txt(p['tp1_d'], pip, sym)})",
-              f"الهدف الثاني: {B.fmt(p['tp2'], pip)} ({B.dist_txt(p['tp_d'], pip, sym)})"]
+              f"الستوب: {B.fmt(p['sl'], pip)} ({B.dist_txt(p['risk'], pip, sym)})"]
+    if abs(p["tp1"] - p["tp2"]) < 1e-9:
+        lines.append(f"الهدف: {B.fmt(p['tp2'], pip)} ({B.dist_txt(p['tp_d'], pip, sym)} | +{p['rr']:.1f}R)")
+    else:
+        lines += [f"الهدف الأول: {B.fmt(p['tp1'], pip)} ({B.dist_txt(p['tp1_d'], pip, sym)})",
+                  f"الهدف الثاني: {B.fmt(p['tp2'], pip)} ({B.dist_txt(p['tp_d'], pip, sym)})"]
     if c.get("n_ok") is not None:
         lines.append(f"\nالتأكيد: {c['n_ok']}/3" + (f" (ناقص: {'، '.join(c['miss'])})" if c.get("miss") else ""))
     return "\n".join(lines)
@@ -215,6 +431,8 @@ def entry_msg2(c, sym, pip):
 # ---------------- ربط مع bot.py (بدون تعديل ملفو) ----------------
 _orig_fetch = B.fetch
 _orig_eval = B.evaluate
+_orig_manage = B.manage
+_orig_tg = B.tg
 
 
 def fetch2(symbol, interval, size):
@@ -225,7 +443,11 @@ def fetch2(symbol, interval, size):
 
 
 def eval2(ctx, off, now):
-    res = _orig_eval(ctx, off, now)
+    res = [c for c in _orig_eval(ctx, off, now) if c.get("kind") in KEEP_KINDS]
+    try:
+        res = res + ha_cands(ctx, off, now)
+    except Exception as e:
+        print("heikin engine failed:", repr(e))
     if off == 0:
         try:
             df5 = ctx.get("df1")
@@ -234,6 +456,22 @@ def eval2(ctx, off, now):
         except Exception as e:
             print("session engines failed:", repr(e))
     return res
+
+
+def manage2(st, sym, ctx, cands, now, day):
+    try:
+        ha_exit(st, sym, ctx, now, day)
+    except Exception as e:
+        print("heikin exit failed:", repr(e))
+    return _orig_manage(st, sym, ctx, cands, now, day)
+
+
+def tg2(text):
+    if isinstance(text, str) and text.startswith("✅ البوت شغال — النسخة الجديدة"):
+        text = ("✅ البوت شغال — نسخة الهايكن.\n"
+                "المحرك الأساسي: شموع هايكن 15 دقيقة (انعكاس + شمعة تأكيد بدون ذيل) عند منطقة انعكاس أو بعد ارتداد منها.\n"
+                "معو سحب السيولة القديم. تنبيه تسكير عند شمعة بذيلين. ملخص يومي الساعة 21 UTC.")
+    return _orig_tg(text)
 
 
 # ---------------- Backtest ----------------
@@ -426,6 +664,8 @@ def run():
         return
     B.fetch = fetch2
     B.evaluate = eval2
+    B.manage = manage2
+    B.tg = tg2
     B.entry_msg = entry_msg2
     B.main()
 
