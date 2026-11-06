@@ -1,13 +1,9 @@
-"""بوت الذهب XAU/USD على GitHub Actions - شغّال من افتتاح السوق لإغلاقه (ذهب بس)
-السيناريوهات الشغّالة (كلها بتأكيد، مافي دخول على أول لمسة):
-  1) سحب سيولة + كسر هيكل: السعر بيسحب قمة/قاع منطقة قوية وبيرجع، والدخول بعد شمعة قوية
-     بتكسر شمعة السحب وكمان آخر قمة/قاع صغير قبلها (تأكيد الارتداد)
-  2) تجميع ثم سحب سيولة: نطاق أفقي ضيق، سحب فوقه/تحته، رجوع جواه وكسر شمعة السحب
-  3) اندفاع ثم تراجع: مع اتجاه الساعة أو 4 ساعات فقط
-السيناريوهات المطفية (بتتشغّل من الـ env): الارتداد العادي BOUNCE_ON=1، الكسر وإعادة الاختبار RETEST_ON=1
-الستوب: خلف ذيل السحب. هدفين: الأول من أقرب قمة/قاع، والثاني من الحاجز/السيولة. صفقة وحدة بالوقت.
-الرسالة: دخول/ستوب/هدفين. وبعدها رسالة عند كل هدف وعند نهاية الصفقة
-"""
+# -*- coding: utf-8 -*-
+"""بوت الذهب XAU/USD على GitHub Actions - استراتيجية الهايكن (الانسحاب) على فريم 15 دقيقة
+القاعدة: بعد حركة صاعدة، شمعة هايكن هابطة بدون ذيل علوي (شمعة الانعكاس نفسها أو اللي بعدها) = بيع عند إغلاقها.
+العكس للشراء. الستوب فوق قمة آخر شمعة صاعدة (أو تحت قاع آخر شمعة هابطة).
+الهدف الأول: أول مستوى. الهدف الثاني: المستوى اللي بعدو. بعد الهدف الأول: حرّك الستوب للدخول.
+رسالة عند كل هدف وعند الستوب، وبعدها بيدوّر على صفقة جديدة. صفقة وحدة بالوقت."""
 import os
 import sys
 import json
@@ -36,21 +32,20 @@ TD_KEY = env("TWELVE_DATA_API_KEY")
 TG_TOKEN = env("TELEGRAM_BOT_TOKEN")
 TG_CHAT = env("TELEGRAM_CHAT_ID")
 SYMBOLS = [s.strip() for s in env("SYMBOLS", "XAU/USD").split(",") if s.strip()]
-PIPS = {"XAU/USD": 0.1, "GBP/JPY": 0.01, "USD/JPY": 0.01, "EUR/USD": 0.0001, "GBP/USD": 0.0001, "BTC/USD": 1.0}
-# الأرقام النفسية: (رقم نفسي عادي، رقم نفسي كبير)
+PIPS = {"XAU/USD": 0.1, "EUR/USD": 0.0001, "GBP/USD": 0.0001, "USD/JPY": 0.01, "GBP/JPY": 0.01}
 PSY = {"XAU/USD": (10.0, 50.0), "EUR/USD": (0.0050, 0.0100), "GBP/USD": (0.0050, 0.0100),
        "USD/JPY": (0.50, 1.00), "GBP/JPY": (0.50, 1.00)}
-# السبريد بالبيب (الذهب: 14 سنت ≈ 1.4 بيب، حاطينه 1.5)
 SPREADS = {"XAU/USD": 1.5, "EUR/USD": 1, "GBP/USD": 1.5, "USD/JPY": 1, "GBP/JPY": 2}
-USE_M1 = env("USE_M1", "1") == "1"            # شموع الدقيقة لمتابعة الأهداف بدقة
+USE_M1 = env("USE_M1", "1") == "1"          # شموع الدقيقة لمتابعة الأهداف والستوب بدقة
 
-# ---- السيناريوهات (شغّال/مطفي) ----
-BOUNCE_ON = env("BOUNCE_ON", "0") == "1"      # الارتداد العادي: مطفي (نتايجه كانت 50%)
-RETEST_ON = env("RETEST_ON", "0") == "1"      # كسر وإعادة اختبار: مطفي
-MSS_ON = env("MSS_ON", "1") == "1"            # سحب السيولة بده كسر هيكل صغير كتأكيد
-MSS_LOOK = envi("MSS_LOOK", 5)                # عدد الشموع قبل شمعة السحب اللي لازم الإغلاق يكسر قمتها/قاعها
+# ---- الهايكن ----
+HA_MIN_RUN = envi("HA_MIN_RUN", 2)          # أقل عدد شموع بالحركة قبل الانعكاس
+HA_WICK_TOL = envf("HA_WICK_TOL", 0.15)     # أكبر ذيل مسموح (من حجم شمعة الهايكن) لتعتبر "بدون ذيل"
+LOOKBACK = envi("LOOKBACK", 2)              # آخر شمعتين مغلقتين (لو التشغيل تأخر شوي)
+MAX_AGE_MIN = envi("MAX_AGE_MIN", 40)       # آخر شمعة أقدم من هيك = السوق مسكّر
+GAP_MIN = envi("GAP_MIN", 70)
 
-# ---- المناطق ----
+# ---- المستويات (للأهداف) ----
 ZONE_HISTORY = envi("ZONE_HISTORY", 2000)
 PIV_LEN = envi("PIV_LEN", 6)
 MERGE_ATR = envf("MERGE_ATR", 0.6)
@@ -61,104 +56,28 @@ REACT_BARS = envi("REACT_BARS", 40)
 BIG_REACT = envf("BIG_REACT", 4.0)
 TOUCH_GAP = envi("TOUCH_GAP", 6)
 BRK_ATR = envf("BRK_ATR", 0.30)
-MIN_ZONE_SCORE = envi("MIN_ZONE_SCORE", 6)    # 7 = ★★ ، 12 = ★★★
-BOUNCE_MIN_SCORE = envi("BOUNCE_MIN_SCORE", 8)  # الارتداد بده منطقة أقوى من السحب
-WALL_MIN_SCORE = envi("WALL_MIN_SCORE", 8)      # أقل قوة لمنطقة تعتبر حاجز قدام الهدف
-PSY_STEP = envf("PSY_STEP", 10.0)
-PSY_MAJOR = envf("PSY_MAJOR", 50.0)
+LEVEL_MIN_SCORE = envi("LEVEL_MIN_SCORE", 7)    # قوة المنطقة لتعتبر مستوى هدف (7 = ★★)
 H1_PIV = envi("H1_PIV", 4)
 H1_HISTORY = envi("H1_HISTORY", 1000)
 H1_MIN_SCORE = envi("H1_MIN_SCORE", 5)
 
-# ---- شروط الشموع ----
-TOL_ATR = envf("TOL_ATR", 0.15)
-PIERCE_ATR = envf("PIERCE_ATR", 0.40)         # أقل عمق لسحب السيولة
-SW_MAX = envf("SW_MAX", 2.5)
-WICK_MIN = envf("WICK_MIN", 0.40)
-BODY_MIN = envf("BODY_MIN", 0.45)
-MIN_RANGE_ATR = envf("MIN_RANGE_ATR", 0.5)
-BRK_BODY = envf("BRK_BODY", 0.50)
-BRK_RANGE = envf("BRK_RANGE", 0.8)
-SPIKE_ATR = envf("SPIKE_ATR", 4.0)
-RETEST_BARS = envi("RETEST_BARS", 16)
-RETEST_RUN = envf("RETEST_RUN", 0.5)
-RETEST_TOUCH = envf("RETEST_TOUCH", 0.35)
-
-# ---- تجميع ----
-ACC_MIN_BARS = envi("ACC_MIN_BARS", 8)
-ACC_MAX_BARS = envi("ACC_MAX_BARS", 24)
-ACC_MIN_ATR = envf("ACC_MIN_ATR", 0.6)        # أقل عرض (ارتفاع) للنطاق
-ACC_MAX_ATR = envf("ACC_MAX_ATR", 2.2)        # أكبر ارتفاع للنطاق (أفقي مو عمودي)
-ACC_EDGE_TOUCH = envi("ACC_EDGE_TOUCH", 2)    # كم مرة لازم تلمس كل حافة
-ACC_PIERCE = envf("ACC_PIERCE", 0.15)
-ACC_SCORE = envi("ACC_SCORE", 7)
-ACC_BONUS = envi("ACC_BONUS", 20)             # أفضلية لسيناريو التجميع
-
-# ---- اندفاع ثم تراجع مع الاتجاه ----
-PB_ON = env("PB_ON", "1") == "1"
-IMP_ATR = envf("IMP_ATR", 1.6)
-IMP_MAX_ATR = envf("IMP_MAX_ATR", 4.0)
-IMP_BODY = envf("IMP_BODY", 0.60)
-IMP_LOOK = envi("IMP_LOOK", 20)
-PB_BARS = envi("PB_BARS", 12)
-PB_MIN = envf("PB_MIN", 0.30)
-PB_MAX = envf("PB_MAX", 0.70)
-
-# ---- الستوب والأهداف ----
-STOP_BUF_ATR = envf("STOP_BUF_ATR", 0.25)     # مسافة خلف قمة/قاع السيناريو (غير السبريد)
-MIN_RISK_ATR = envf("MIN_RISK_ATR", 0.8)      # ستوب أصغر من هيك بينضرب بالعشوائية، بنوسعه
-MAX_RISK_ATR = envf("MAX_RISK_ATR", 2.5)      # أكبر من هيك الصفقة بتنلغي
-MIN_RR = envf("MIN_RR", 1.5)                  # أقل نسبة ربح/خسارة للهدف الثاني
-MAX_RR = envf("MAX_RR", 4.0)
-DEFAULT_RR = envf("DEFAULT_RR", 2.0)          # إذا ما في حاجز/قمة قدام السعر
-TP_BUF_ATR = envf("TP_BUF_ATR", 0.10)         # بنحط الهدف قبل الحاجز بشوي
-TP1_RR = envf("TP1_RR", 1.0)                  # الهدف الأول تقريباً 1R إذا ما في قمة/قاع منطقي
-TP1_PART = envf("TP1_PART", 0.5)              # حصة الصفقة اللي بتتسكّر عند الهدف الأول (للحساب بالـ R)
-MIN_TP_PIPS = {"XAU/USD": envf("MIN_TP_PIPS", 60)}    # أقل هدف ثاني (60 بيب = 6$)
-MIN_TP1_PIPS = {"XAU/USD": envf("MIN_TP1_PIPS", 40)}  # أقل هدف أول (40 بيب = 4$)
-SPREAD_PIPS = envf("SPREAD_PIPS", 3)
-
-# ---- حدود وتنبيهات ----
-MAX_PER_DAY = envi("MAX_PER_DAY", 6)
-MAX_LOSSES = envi("MAX_LOSSES", 2)
-SESSION_ON = env("SESSION_ON", "0") == "1"
-SESSION_START = envi("SESSION_START", 7)
-SESSION_END = envi("SESSION_END", 20)
-QUIET_ON = env("QUIET_ON", "0") == "1"        # بالساعات الهادية بنطلب تأكيد كامل (3/3)
-QUIET_START = envi("QUIET_START", 21)         # UTC
-QUIET_END = envi("QUIET_END", 7)              # UTC (لندن بتفتح تقريباً 7 UTC)
-MAX_AGE_MIN = envi("MAX_AGE_MIN", 40)
-GAP_MIN = envi("GAP_MIN", 70)
-LOOKBACK = envi("LOOKBACK", 2)
-ZONE_LOCK_HOURS = envf("ZONE_LOCK_HOURS", 1.0)
+# ---- الصفقة ----
+STOP_BUF_ATR = envf("STOP_BUF_ATR", 0.10)       # مسافة خلف قمة/قاع الشمعة (غير السبريد)
+MIN_RISK_ATR = envf("MIN_RISK_ATR", 0.5)        # ستوب أضيق من هيك بنوسعو
+MIN_TP_ATR = envf("MIN_TP_ATR", 0.3)            # الهدف ما يكون لاصق بالدخول
+TP_BUF_ATR = envf("TP_BUF_ATR", 0.10)           # الهدف قبل المستوى بشوي
+TP2_GAP_ATR = envf("TP2_GAP_ATR", 1.0)          # الهدف الثاني على الأقل هالمسافة بعد الأول
+TP1_PART = envf("TP1_PART", 0.5)                # حصة الصفقة اللي بتتسكّر عند الهدف الأول (للحساب بالـ R)
 EXPIRE_HOURS = envf("EXPIRE_HOURS", 8)
-MIN_PROFIT_R = envf("MIN_PROFIT_R", 0.4)
-REV_MIN_REASONS = envi("REV_MIN_REASONS", 2)
-HEARTBEAT_HOURS = envf("HEARTBEAT_HOURS", 0)  # 0 = مطفي (الملخص اليومي كافي)
+EXIT_WICK = envf("EXIT_WICK", 0.12)             # شمعة بذيلين (كل ذيل >= هالنسبة) = ضعف
+EXIT_MIN_R = envf("EXIT_MIN_R", 0.3)
+MAX_PER_DAY = envi("MAX_PER_DAY", 0)            # 0 = بدون حد
+MAX_LOSSES = envi("MAX_LOSSES", 0)              # 0 = بدون حد
+HEARTBEAT_HOURS = envf("HEARTBEAT_HOURS", 0)    # 0 = مطفي
 STATE_FILE = "state.json"
-BOT_VERSION = "2026-11-01-sweep-mss"   # لما تتغير هالقيمة البوت بيبعت رسالة "شغال" مرة وحدة
-
-KIND_AR = {"BOUNCE": "ارتداد", "SWEEP": "سحب سيولة", "ACC": "تجميع وسحب سيولة", "RETEST": "كسر وإعادة اختبار",
-           "PULLBACK": "اندفاع وتراجع"}
+BOT_VERSION = "2026-11-07-heikin-simple"
 SENT = []
 LAST_ERR = {"msg": ""}
-DIAG = {}
-DIAG_LABELS = {
-    "raw": "إشارات خام مكتشفة",
-    "sweep_no_confirm": "سحب سيولة صار بس شمعة التأكيد ما كملت",
-    "mss_fail": "سحب + تأكيد بس ما كسر آخر قمة/قاع صغير",
-    "counter_trend": "ضد اتجاه الساعة و4 ساعات وبدون منطقة ساعة",
-    "quiet": "ساعة هادية بدون تأكيد كامل",
-    "stop_wrong_side": "الستوب بالاتجاه الغلط", "risk_far": "الستوب بعيد",
-    "no_room": "حاجز قوي قريب قدام الهدف", "rr_low": "الهدف قريب نسبةً للستوب",
-    "chase": "السعر ابتعد (مطاردة)", "stale": "الشمعة قديمة (السوق مسكّر؟)",
-    "zone_locked": "المنطقة مستخدمة قبل شوي", "after_gap": "أول شموع بعد افتتاح السوق (انتظار)",
-    "pb_no_trend": "اندفاع وتراجع: ضد اتجاه الساعة و4 ساعات",
-}
-
-
-def dg(k, n=1):
-    DIAG[k] = DIAG.get(k, 0) + n
 
 
 def fmt(x, pip):
@@ -168,9 +87,6 @@ def fmt(x, pip):
 def dist_txt(d, pip, sym):
     p = d / pip
     return f"{p:.0f} بيب ≈ {d:.1f}$" if sym == "XAU/USD" else f"{p:.1f} بيب"
-
-
-p2 = lambda v: f"{v:,.2f}"
 
 
 # ---------------- البيانات ----------------
@@ -213,30 +129,6 @@ def add_atr(d, n=14):
     return tr.ewm(alpha=1 / n, adjust=False).mean()
 
 
-def ema_dir(d, fast, slow):
-    if len(d) < slow + 5:
-        return 0
-    ef = d["Close"].ewm(span=fast, adjust=False).mean().iloc[-1]
-    es = d["Close"].ewm(span=slow, adjust=False).mean().iloc[-1]
-    return 1 if ef > es else -1 if ef < es else 0
-
-
-def h1_side(h1):
-    if len(h1) < 60:
-        return 0
-    e = h1["Close"].ewm(span=50, adjust=False).mean().iloc[-1]
-    return 1 if h1["Close"].iloc[-1] > e else -1
-
-
-def last_gap_pos(win):
-    """موضع أول شمعة بعد آخر إغلاق للسوق (فجوة أكبر من GAP_MIN دقيقة). 0 = ما في فجوة"""
-    if len(win) < 3:
-        return 0
-    dm = np.diff(win.index.values).astype("timedelta64[m]").astype(np.int64)
-    g = np.flatnonzero(dm > GAP_MIN)
-    return int(g[-1]) + 1 if len(g) else 0
-
-
 def key_levels(d):
     keys = {}
     try:
@@ -259,7 +151,11 @@ def key_levels(d):
     return keys
 
 
-# ---------------- المناطق ----------------
+KEY_AR = {"PDH": "قمة أمس", "PDL": "قاع أمس", "PWH": "قمة الأسبوع الماضي", "PWL": "قاع الأسبوع الماضي",
+          "PMH": "قمة الشهر الماضي", "PML": "قاع الشهر الماضي"}
+
+
+# ---------------- المناطق (بتستعمل كأهداف) ----------------
 def pivots(d, L):
     H = d["High"].values
     Lw = d["Low"].values
@@ -270,9 +166,8 @@ def pivots(d, L):
     return np.flatnonzero(H == hmax), np.flatnonzero(Lw == lmin)
 
 
-def build_zones(d, atr, keys, piv, psy=None):
-    """مناطق من قمم وقيعان حقيقية: لمسات، ارتدادات، دور (دعم/مقاومة)، انكسار، قوة"""
-    psy_step, psy_major = psy if psy else (PSY_STEP, PSY_MAJOR)
+def build_zones(d, atr, keys, piv, psy):
+    psy_step, psy_major = psy
     n = len(d)
     if not atr or atr != atr or atr <= 0 or n < 2 * piv + 20:
         return []
@@ -291,9 +186,7 @@ def build_zones(d, atr, keys, piv, psy=None):
     if not pts:
         return []
     pts.sort(key=lambda x: x[0])
-
-    clusters = []
-    cur = None
+    clusters, cur = [], None
     for p, ty, bi, rc in pts:
         if cur is not None and (p - cur["hi"] > MERGE_ATR * atr or p - cur["lo"] > MAXH_ATR * atr):
             clusters.append(cur)
@@ -307,7 +200,6 @@ def build_zones(d, atr, keys, piv, psy=None):
             cur["fi"], cur["ft"] = bi, ty
     if cur is not None:
         clusters.append(cur)
-
     pad, brk = PAD_ATR * atr, BRK_ATR * atr
     out = []
     for z in clusters:
@@ -316,344 +208,120 @@ def build_zones(d, atr, keys, piv, psy=None):
         top, bot = z["hi"] + pad, z["lo"] - pad
         idx = np.flatnonzero((H >= bot) & (Lw <= top))
         touches = 0 if len(idx) == 0 else 1 + int((np.diff(idx) > TOUCH_GAP).sum())
-        role = -1 if z["ft"] == 1 else 1
-        flips, lfi, lfd = 0, -1, 0
-        fi = z["fi"]
-        ev = sorted([(int(j), 1) for j in np.flatnonzero(C > top + brk) if j > fi] +
-                    [(int(j), -1) for j in np.flatnonzero(C < bot - brk) if j > fi])
-        for j, e in ev:
-            if role == -1 and e == 1:
-                role, flips, lfi, lfd = 1, flips + 1, j, 1
-            elif role == 1 and e == -1:
-                role, flips, lfi, lfd = -1, flips + 1, j, -1
         score = touches + 2 * z["sw"] + int(round(min(z["re"], 8.0) / 2))
-        tags = []
         if math.floor(top / psy_major) * psy_major >= bot:
             score += 2
-            tags.append("رقم نفسي كبير")
         elif math.floor(top / psy_step) * psy_step >= bot:
             score += 1
-            tags.append("رقم نفسي")
         for nm, kv in keys.items():
             if bot - 0.1 * atr <= kv <= top + 0.1 * atr:
                 score += 3
-                tags.append(nm)
-        out.append({"top": top, "bot": bot, "mid": (top + bot) / 2, "sw": z["sw"], "touches": touches,
-                    "role": role, "flips": flips, "lfi": lfi, "lfd": lfd, "score": score,
-                    "stars": 3 if score >= 12 else 2 if score >= 7 else 1, "tags": tags, "re": z["re"]})
+        out.append({"top": top, "bot": bot, "mid": (top + bot) / 2, "score": score,
+                    "stars": 3 if score >= 12 else 2 if score >= 7 else 1})
     out.sort(key=lambda z: z["mid"])
     return out
 
 
-def h1_overlap(z, h1z, atr):
-    for hz in h1z:
-        if hz["score"] >= H1_MIN_SCORE and hz["bot"] - 0.3 * atr <= z["top"] and hz["top"] + 0.3 * atr >= z["bot"]:
-            return True
-    return False
+# ---------------- الهايكن آشي ----------------
+def ha_candles(d, n_use=800):
+    w = d.iloc[-n_use:]
+    o, h, l, c = (w[k].values.astype(float) for k in ("Open", "High", "Low", "Close"))
+    hc = (o + h + l + c) / 4.0
+    ho = np.empty(len(w))
+    ho[0] = (o[0] + c[0]) / 2.0
+    for i in range(1, len(w)):
+        ho[i] = (ho[i - 1] + hc[i - 1]) / 2.0
+    hh = np.maximum(h, np.maximum(ho, hc))
+    hl = np.minimum(l, np.minimum(ho, hc))
+    return pd.DataFrame({"HO": ho, "HH": hh, "HL": hl, "HC": hc}, index=w.index)
 
 
-def near_zone(px, zones, atr):
-    for z in zones:
-        if z["score"] >= MIN_ZONE_SCORE and z["bot"] - 0.3 * atr <= px <= z["top"] + 0.3 * atr:
-            return True
-    return False
-
-
-# ---------------- كشف السيناريوهات: المناطق (الشمعة الأخيرة في win، والمناطق مبنية قبلها) ----------------
-def detect(win, zones, atr):
-    out = []
-    n = len(win)
-    if n < 30 or not atr:
-        return out
-    o, h, l, c = (win[k].values for k in ("Open", "High", "Low", "Close"))
-    i = n - 1
-    rng = h[i] - l[i]
-    if rng <= 0:
-        return out
-    body = abs(c[i] - o[i])
-    up_w = h[i] - max(o[i], c[i])
-    lo_w = min(o[i], c[i]) - l[i]
-    bull, bear = c[i] > o[i], c[i] < o[i]
-    tol = TOL_ATR * atr
-    big = rng >= MIN_RANGE_ATR * atr
-    strong = body >= BODY_MIN * rng
-
-    # شمعة الرفض (الشمعة قبل الأخيرة) للارتداد
-    j = i - 1
-    rj = h[j] - l[j]
-    okj = rj > 0 and rj >= MIN_RANGE_ATR * atr
-    if okj:
-        uwj = h[j] - max(o[j], c[j])
-        lwj = min(o[j], c[j]) - l[j]
-        bengj = c[j - 1] < o[j - 1] and c[j] > o[j] and o[j] <= c[j - 1] and c[j] >= o[j - 1]
-        sengj = c[j - 1] > o[j - 1] and c[j] < o[j] and o[j] >= c[j - 1] and c[j] <= o[j - 1]
-
-    def add(kind, name, dr, z, anchor, why):
-        out.append({"kind": kind, "name": name, "dir": dr, "zone": z, "anchor": float(anchor), "why": why,
-                    "ci": float(c[i]), "info": "", "area": (z["bot"], z["top"])})
-
-    for z in zones:
-        if z["score"] < MIN_ZONE_SCORE:
+def ha_signal(d, off):
+    """شموع صاعدة -> شمعة هابطة بدون ذيل علوي = بيع. شموع هابطة -> شمعة صاعدة بدون ذيل سفلي = شراء.
+    شمعة الإشارة: شمعة الانعكاس نفسها (lag=0) أو اللي بعدها (lag=1). الستوب خلف آخر شمعة من الحركة."""
+    ha = ha_candles(d)
+    n = len(ha)
+    k = n - 1 - off
+    if k < HA_MIN_RUN + 3:
+        return None
+    gaps = np.diff(ha.index.values[k - HA_MIN_RUN - 2:k + 1]).astype("timedelta64[m]").astype(np.int64)
+    if (gaps > 30).any():                       # فجوة سوق (إغلاق يومي/أسبوعي): الشموع مو متتالية
+        return None
+    HO, HH, HL, HC = (ha[x].values for x in ("HO", "HH", "HL", "HC"))
+    bull, bear = HC > HO, HC < HO
+    r = HH[k] - HL[k]
+    if r <= 0:
+        return None
+    for dr in (1, -1):
+        same, opp = (bull, bear) if dr == 1 else (bear, bull)
+        if not same[k]:
             continue
-        if h[i] < z["bot"] - 3 * atr or l[i] > z["top"] + 3 * atr:
+        wick = (min(HO[k], HC[k]) - HL[k]) if dr == 1 else (HH[k] - max(HO[k], HC[k]))
+        if wick > HA_WICK_TOL * r:
             continue
-        top, bot, mid = z["top"], z["bot"], z["mid"]
-        age = (i - z["lfi"]) if z["flips"] > 0 else None
-        if age is not None and age < 2:
-            continue
-        recent = age is not None and age <= RETEST_BARS
-
-        # ---- كسر حقيقي ثم إعادة اختبار (مطفي افتراضياً) ----
-        if recent:
-            if not RETEST_ON:
+        for lag in (0, 1):
+            if lag == 1 and not same[k - 1]:
                 continue
-            k = z["lfi"]
-            bk = h[k] - l[k]
-            real_brk = (bk >= BRK_RANGE * atr and bk <= SPIKE_ATR * atr and abs(c[k] - o[k]) >= BRK_BODY * bk
-                        and ((c[k] > o[k]) == (z["lfd"] == 1)))
-            if not real_brk:
+            run_end = k - lag - 1
+            if run_end - HA_MIN_RUN + 1 < 0 or not all(opp[run_end - j] for j in range(HA_MIN_RUN)):
                 continue
-            if z["lfd"] == 1 and z["role"] == 1:
-                held = bool((c[k + 1:i] >= bot - 0.15 * atr).all())
-                run = h[k:i].max() - top
-                touch = l[i] <= top + RETEST_TOUCH * atr and c[i] > top
-                if held and run >= RETEST_RUN * atr and touch and bull and big and (lo_w >= 0.3 * rng or body >= 0.5 * rng):
-                    add("RETEST", "كسر مقاومة وإعادة اختبارها كدعم", 1, z, min(l[i], bot),
-                        [f"شمعة قوية كسرت المقاومة {p2(top)}", "السعر رجع اختبرها وثبت فوقها وطلعت شمعة رفض صاعدة"])
-            elif z["lfd"] == -1 and z["role"] == -1:
-                held = bool((c[k + 1:i] <= top + 0.15 * atr).all())
-                run = bot - l[k:i].min()
-                touch = h[i] >= bot - RETEST_TOUCH * atr and c[i] < bot
-                if held and run >= RETEST_RUN * atr and touch and bear and big and (up_w >= 0.3 * rng or body >= 0.5 * rng):
-                    add("RETEST", "كسر دعم وإعادة اختباره كمقاومة", -1, z, max(h[i], top),
-                        [f"شمعة قوية كسرت الدعم {p2(bot)}", "السعر رجع اختبره ورُفض منه وطلعت شمعة رفض هابطة"])
-            continue
-
-        if z["role"] == 1:     # دعم
-            done = False
-            for jj in (i - 1, i - 2):
-                ext = float(l[jj:i + 1].min())
-                pierce = bot - ext
-                if not (PIERCE_ATR * atr < pierce <= SW_MAX * atr):
-                    continue
-                if c[jj:i].min() < bot - 0.15 * atr:      # إغلاق تحت الدعم = كسر مو سحب
-                    continue
-                if not (bull and big and strong and c[i] > max(float(h[jj:i].max()), bot)):
-                    dg("sweep_no_confirm")
-                    continue
-                if MSS_ON and not c[i] > float(h[max(0, jj - MSS_LOOK):jj].max()):
-                    dg("mss_fail")
-                    continue
-                add("SWEEP", "سحب سيولة تحت الدعم", 1, z, ext,
-                    [f"السعر سحب السيولة تحت الدعم {p2(bot)} ({pierce / atr:.1f} ATR) ورجع فوقه",
-                     "شمعة قوية أغلقت فوق قمة شمعة السحب وكسرت آخر قمة صغيرة (انعكاس مؤكد)"])
-                done = True
-                break
-            if done:
-                continue
-            if (BOUNCE_ON and okj and z["score"] >= BOUNCE_MIN_SCORE and bot - PIERCE_ATR * atr <= l[j] <= top + tol
-                    and c[j] > mid and (lwj >= WICK_MIN * rj or bengj) and bull and big and strong and c[i] > c[j]
-                    and l[i] >= bot - 0.1 * atr):
-                add("BOUNCE", "ارتداد من دعم قوي", 1, z, min(l[j], l[i], bot),
-                    [f"دعم قوي {p2(bot)} - {p2(top)} ({z['touches']} لمسات)",
-                     "شمعة رفض واضحة ثم شمعة تأكيد صاعدة أغلقت أعلى منها"])
-        else:                  # مقاومة
-            done = False
-            for jj in (i - 1, i - 2):
-                ext = float(h[jj:i + 1].max())
-                pierce = ext - top
-                if not (PIERCE_ATR * atr < pierce <= SW_MAX * atr):
-                    continue
-                if c[jj:i].max() > top + 0.15 * atr:
-                    continue
-                if not (bear and big and strong and c[i] < min(float(l[jj:i].min()), top)):
-                    dg("sweep_no_confirm")
-                    continue
-                if MSS_ON and not c[i] < float(l[max(0, jj - MSS_LOOK):jj].min()):
-                    dg("mss_fail")
-                    continue
-                add("SWEEP", "سحب سيولة فوق المقاومة", -1, z, ext,
-                    [f"السعر سحب السيولة فوق المقاومة {p2(top)} ({pierce / atr:.1f} ATR) ورجع تحتها",
-                     "شمعة قوية أغلقت تحت قاع شمعة السحب وكسرت آخر قاع صغير (انعكاس مؤكد)"])
-                done = True
-                break
-            if done:
-                continue
-            if (BOUNCE_ON and okj and z["score"] >= BOUNCE_MIN_SCORE and bot - tol <= h[j] <= top + PIERCE_ATR * atr
-                    and c[j] < mid and (uwj >= WICK_MIN * rj or sengj) and bear and big and strong and c[i] < c[j]
-                    and h[i] <= top + 0.1 * atr):
-                add("BOUNCE", "ارتداد من مقاومة قوية", -1, z, max(h[j], h[i], top),
-                    [f"مقاومة قوية {p2(bot)} - {p2(top)} ({z['touches']} لمسات)",
-                     "شمعة رفض واضحة ثم شمعة تأكيد هابطة أغلقت أدنى منها"])
-    return out
-
-
-# ---------------- كشف السيناريوهات: تجميع ثم سحب سيولة ----------------
-def find_range(h, l, c, end, atr):
-    """نطاق تجميع أفقي ضيق بينتهي قبل الشمعة end (غير شاملة). بيرجع أطول نافذة مطابقة"""
-    for nb in range(ACC_MAX_BARS, ACC_MIN_BARS - 1, -1):
-        s = end - nb
-        if s < 0:
-            continue
-        hh, ll = float(h[s:end].max()), float(l[s:end].min())
-        w = hh - ll
-        if not (ACC_MIN_ATR * atr <= w <= ACC_MAX_ATR * atr):
-            continue
-        if abs(c[end - 1] - c[s]) > 0.6 * w:        # لازم أفقي مو ماشي باتجاه
-            continue
-        eh = int((h[s:end] >= hh - 0.25 * w).sum())
-        el = int((l[s:end] <= ll + 0.25 * w).sum())
-        if eh >= ACC_EDGE_TOUCH and el >= ACC_EDGE_TOUCH:
-            return {"hi": hh, "lo": ll, "n": nb, "w": w}
+            run = 0
+            while run_end - run >= 0 and opp[run_end - run] and run < 30:
+                run += 1
+            anchor = HL[run_end] if dr == 1 else HH[run_end]
+            return {"dir": dr, "pos": len(d) - 1 - off, "anchor": float(anchor), "run": run, "lag": lag}
     return None
 
 
-def detect_acc(win, atr):
-    out = []
-    n = len(win)
-    if n < ACC_MAX_BARS + 6 or not atr:
-        return out
-    o, h, l, c = (win[k].values for k in ("Open", "High", "Low", "Close"))
-    i = n - 1
-    rng = h[i] - l[i]
-    if rng <= 0:
-        return out
-    body = abs(c[i] - o[i])
-    bull, bear = c[i] > o[i], c[i] < o[i]
-    big = rng >= MIN_RANGE_ATR * atr
-    strong = body >= BODY_MIN * rng
-    for jj in (i - 1, i - 2):
-        r = find_range(h, l, c, jj, atr)
-        if not r:
-            continue
-        hi, lo = r["hi"], r["lo"]
-        z = {"top": hi, "bot": lo, "mid": (hi + lo) / 2, "score": ACC_SCORE, "stars": 2, "touches": r["n"],
-             "sw": 0, "tags": ["تجميع"], "role": 0}
-        ext_h = float(h[jj:i + 1].max())
-        ext_l = float(l[jj:i + 1].min())
-        if (ACC_PIERCE * atr < ext_h - hi <= SW_MAX * atr and c[jj:i].max() <= hi + 0.15 * atr
-                and bear and big and strong and c[i] < min(float(l[jj:i].min()), hi)):
-            out.append({"kind": "ACC", "name": "تجميع ثم سحب سيولة فوق النطاق (بيع)", "dir": -1, "zone": z,
-                        "anchor": ext_h, "ci": float(c[i]), "info": "", "area": (lo, hi),
-                        "why": [f"تجميع أفقي {r['n']} شمعة بين {p2(lo)} و{p2(hi)}",
-                                "السعر سحب السيولة فوق النطاق ورجع جواه وكسر قاع شمعة السحب"]})
-            break
-        if (ACC_PIERCE * atr < lo - ext_l <= SW_MAX * atr and c[jj:i].min() >= lo - 0.15 * atr
-                and bull and big and strong and c[i] > max(float(h[jj:i].max()), lo)):
-            out.append({"kind": "ACC", "name": "تجميع ثم سحب سيولة تحت النطاق (شراء)", "dir": 1, "zone": z,
-                        "anchor": ext_l, "ci": float(c[i]), "info": "", "area": (lo, hi),
-                        "why": [f"تجميع أفقي {r['n']} شمعة بين {p2(lo)} و{p2(hi)}",
-                                "السعر سحب السيولة تحت النطاق ورجع جواه وكسر قمة شمعة السحب"]})
-            break
-    return out
-
-
-# ---------------- كشف السيناريوهات: اندفاع ثم تراجع ----------------
-def detect_pullback(win, atr):
-    out = []
-    n = len(win)
-    if n < IMP_LOOK + PB_BARS + 5 or not atr:
-        return out
-    o, h, l, c = (win[k].values for k in ("Open", "High", "Low", "Close"))
-    i = n - 1
-    rng_i = h[i] - l[i]
-    if rng_i <= 0 or rng_i < MIN_RANGE_ATR * atr:
-        return out
-    body_i = abs(c[i] - o[i])
-    up_w = h[i] - max(o[i], c[i])
-    lo_w = min(o[i], c[i]) - l[i]
-    gp = last_gap_pos(win)
-    kmin = max(i - PB_BARS, IMP_LOOK, gp + 1 if gp > 0 else 0)
-    for k in range(i - 2, kmin - 1, -1):
-        rk = h[k] - l[k]
-        if rk <= 0 or not (IMP_ATR * atr <= rk <= IMP_MAX_ATR * atr) or abs(c[k] - o[k]) < IMP_BODY * rk:
-            continue
-        if c[k] > o[k] and c[k] > h[k - IMP_LOOK:k].max():
-            start = l[k]
-            peak = h[k:i].max()
-            low_pb = l[k + 1:i + 1].min()
-            leg = peak - start
-            depth = (peak - low_pb) / leg if leg > 0 else 0.0
-            if PB_MIN <= depth <= PB_MAX and c[k + 1:i + 1].min() > start and l[i] <= low_pb + 0.3 * atr \
-                    and c[i] > o[i] and c[i] < peak and (body_i >= BODY_MIN * rng_i or lo_w >= WICK_MIN * rng_i):
-                out.append({"kind": "PULLBACK", "name": "اندفاع صاعد ثم تراجع (شراء مع الاتجاه)", "dir": 1, "zone": None,
-                            "anchor": float(low_pb), "ci": float(c[i]), "info": "", "area": None,
-                            "why": [f"اندفاع {rk / atr:.1f} ATR كسر أعلى {IMP_LOOK} شمعة",
-                                    f"تراجع {depth * 100:.0f}% من الحركة وشمعة تأكيد صاعدة"]})
-                break
-        elif c[k] < o[k] and c[k] < l[k - IMP_LOOK:k].min():
-            start = h[k]
-            trough = l[k:i].min()
-            high_pb = h[k + 1:i + 1].max()
-            leg = start - trough
-            depth = (high_pb - trough) / leg if leg > 0 else 0.0
-            if PB_MIN <= depth <= PB_MAX and c[k + 1:i + 1].max() < start and h[i] >= high_pb - 0.3 * atr \
-                    and c[i] < o[i] and c[i] > trough and (body_i >= BODY_MIN * rng_i or up_w >= WICK_MIN * rng_i):
-                out.append({"kind": "PULLBACK", "name": "اندفاع هابط ثم تراجع (بيع مع الاتجاه)", "dir": -1, "zone": None,
-                            "anchor": float(high_pb), "ci": float(c[i]), "info": "", "area": None,
-                            "why": [f"اندفاع {rk / atr:.1f} ATR كسر أدنى {IMP_LOOK} شمعة",
-                                    f"ارتداد {depth * 100:.0f}% من الحركة وشمعة تأكيد هابطة"]})
-                break
-    return out
-
-
-# ---------------- خطة الصفقة: ستوب وهدفين من الهيكل ----------------
-def make_plan(s, live, atr, pip, zones, spread, keys, swings, min_tp, min_tp1):
-    dr, z = s["dir"], s["zone"]
-    sl = s["anchor"] - dr * (STOP_BUF_ATR * atr + spread * pip)
+# ---------------- خطة الصفقة ----------------
+def make_plan(sig, live, ctx):
+    dr, atr, pip, sym = sig["dir"], ctx["atr"], ctx["pip"], ctx["sym"]
+    spread = SPREADS.get(sym, 3)
+    sl = sig["anchor"] - dr * (STOP_BUF_ATR * atr + spread * pip)
     if (dr == 1 and sl >= live) or (dr == -1 and sl <= live):
-        return None, "stop_wrong_side"
+        return None, "الستوب بالاتجاه الغلط"
     risk = abs(live - sl)
-    floor = MIN_RISK_ATR * atr
-    if risk < floor:                       # ستوب ضيق زيادة = بينضرب دغري، بنوسعه
-        sl, risk = live - dr * floor, floor
-    if risk > MAX_RISK_ATR * atr:
-        return None, "risk_far"
-
+    if risk < MIN_RISK_ATR * atr:
+        sl, risk = live - dr * MIN_RISK_ATR * atr, MIN_RISK_ATR * atr
     buf = TP_BUF_ATR * atr
-
-    def ahead(p):
-        d_ = (p - live) * dr
-        return d_ if d_ > 0.2 * atr else None
-
-    walls = []                             # حواجز: مناطق قوية ومستويات مفتاحية قدام السعر
-    for o_ in zones:
-        if o_ is z or o_["score"] < WALL_MIN_SCORE:
-            continue
-        d_ = ahead(o_["bot"] if dr == 1 else o_["top"])
-        if d_ is not None:
-            walls.append(d_)
-    for kv in (keys or {}).values():
-        d_ = ahead(kv)
-        if d_ is not None:
-            walls.append(d_)
-    need = max(MIN_RR * risk, min_tp)
-    wall = min(walls) if walls else None
-    if wall is not None and wall - buf < need:
-        return None, "no_room"
-    cands = []                             # هدف ثاني: أقرب قمة/قاع منطقي بيحقق الحد الأدنى
-    for sp in swings:
-        d_ = ahead(sp)
-        if d_ is not None and d_ - buf >= need:
-            cands.append(d_ - buf)
-    if wall is not None:
-        cands.append(wall - buf)
-    tp_d = min(cands) if cands else max(DEFAULT_RR * risk, min_tp)
-    tp_d = min(tp_d, max(MAX_RR * risk, need))
-    if tp_d < need - 1e-9:
-        return None, "rr_low"
-
-    # هدف أول: أقرب قمة/قاع منطقي بين الدخول والهدف الثاني، وإلا حوالي 1R
-    lo1 = max(0.8 * TP1_RR * risk, min_tp1)
-    c1 = []
-    for sp in swings:
-        d_ = ahead(sp)
-        if d_ is not None and lo1 <= d_ - buf <= 0.85 * tp_d:
-            c1.append(d_ - buf)
-    tp1_d = min(c1) if c1 else min(max(TP1_RR * risk, min_tp1), 0.85 * tp_d)
-    return {"entry": live, "sl": sl, "tp1": live + dr * tp1_d, "tp2": live + dr * tp_d,
-            "tp": live + dr * tp_d, "be": live + dr * tp1_d,
-            "risk": risk, "tp1_d": tp1_d, "tp_d": tp_d, "rr1": tp1_d / risk, "rr": tp_d / risk}, ""
+    lv = []
+    for z in ctx["zones"]:
+        if z["score"] >= LEVEL_MIN_SCORE:
+            d_ = ((z["bot"] if dr == 1 else z["top"]) - live) * dr
+            if d_ > 0:
+                lv.append((d_, f"منطقة {fmt(z['bot'], pip)} – {fmt(z['top'], pip)}"))
+    for z in ctx["h1z"]:
+        if z["score"] >= H1_MIN_SCORE:
+            d_ = ((z["bot"] if dr == 1 else z["top"]) - live) * dr
+            if d_ > 0:
+                lv.append((d_, f"منطقة فريم الساعة {fmt(z['bot'], pip)} – {fmt(z['top'], pip)}"))
+    for nm, kv in ctx["keys"].items():
+        d_ = (kv - live) * dr
+        if d_ > 0:
+            lv.append((d_, f"{KEY_AR.get(nm, nm)} ({fmt(kv, pip)})"))
+    major = float(ctx["psy"][1])
+    base = (math.ceil(live / major) * major) if dr == 1 else (math.floor(live / major) * major)
+    for q in range(3):                                   # الأرقام النفسية الكبيرة (كل 50$ للذهب)
+        lvl = base + dr * q * major
+        d_ = (lvl - live) * dr
+        if d_ > 0:
+            lv.append((d_, f"رقم نفسي كبير ({fmt(lvl, pip)})"))
+    lv.sort()
+    first = [x for x in lv if x[0] - buf >= MIN_TP_ATR * atr]
+    if first:
+        d1, desc1 = first[0]
+        tp1_d = d1 - buf
+        second = [x for x in first[1:] if x[0] - buf >= tp1_d + TP2_GAP_ATR * atr]
+        if second:
+            tp2_d, desc2 = second[0][0] - buf, second[0][1]
+        else:
+            tp2_d, desc2 = 2.0 * tp1_d, "ما في مستوى واضح بعدو (ضعف مسافة الأول)"
+    else:
+        tp1_d, desc1 = 1.0 * risk, "ما في مستوى واضح قدام السعر (1R)"
+        tp2_d, desc2 = 2.0 * risk, "(2R)"
+    return {"entry": live, "sl": sl, "tp1": live + dr * tp1_d, "tp2": live + dr * tp2_d, "tp": live + dr * tp2_d,
+            "be": live + dr * tp1_d, "risk": risk, "tp1_d": tp1_d, "tp_d": tp2_d, "rr1": tp1_d / risk,
+            "rr": tp2_d / risk, "desc1": desc1, "desc2": desc2}, ""
 
 
 def build_ctx(sym, df15, df1, now):
@@ -661,93 +329,48 @@ def build_ctx(sym, df15, df1, now):
     if len(d15c) < 500:
         return None
     pip = PIPS.get(sym, 0.0001)
-    psy = PSY.get(sym, (PSY_STEP, PSY_MAJOR))
+    psy = PSY.get(sym, (10.0, 50.0))
     live = float(df1["Close"].iloc[-1]) if df1 is not None and len(df1) else float(df15["Close"].iloc[-1])
     h1 = rs_complete(d15c, "1h", 60)
-    h4 = rs_complete(d15c, "4h", 240)
-    atr_s = add_atr(d15c)
-    atr = float(atr_s.iloc[-1])
+    atr = float(add_atr(d15c).iloc[-1])
     keys = key_levels(d15c)
     h1_atr = float(add_atr(h1).iloc[-1]) if len(h1) > 40 else 0.0
     h1z = build_zones(h1.iloc[-H1_HISTORY:], h1_atr, {}, H1_PIV, psy) if h1_atr > 0 else []
     zones = build_zones(d15c.iloc[-ZONE_HISTORY:], atr, keys, PIV_LEN, psy)
-    w = d15c.iloc[-400:]
-    ph, pl = pivots(w, 4)
-    swings = [float(w["High"].values[k]) for k in ph] + [float(w["Low"].values[k]) for k in pl]
     age_min = (now - (d15c.index[-1] + pd.Timedelta(minutes=15))).total_seconds() / 60
     return {"sym": sym, "pip": pip, "psy": psy, "df15": df15, "df1": df1, "d15c": d15c, "live": live, "atr": atr,
-            "atr_s": atr_s, "keys": keys, "h1": h1, "h1d": ema_dir(h1, 50, 200), "h4d": ema_dir(h4, 20, 50),
-            "h1side": h1_side(h1), "h1z": h1z, "zones": zones, "swings": swings, "fresh": age_min <= MAX_AGE_MIN}
+            "keys": keys, "h1z": h1z, "zones": zones, "fresh": age_min <= MAX_AGE_MIN}
 
 
 def evaluate(ctx, off, now):
-    sym, pip, d, live = ctx["sym"], ctx["pip"], ctx["d15c"], ctx["live"]
-    n = len(d) - off
-    if n < 400:
+    d, live, sym, pip = ctx["d15c"], ctx["live"], ctx["sym"], ctx["pip"]
+    if len(d) < 400 + off:
         return []
-    dd = d.iloc[:n]
-    end = dd.index[-1] + pd.Timedelta(minutes=15)
+    end = d.index[len(d) - 1 - off] + pd.Timedelta(minutes=15)
     if (now - end).total_seconds() / 60 > MAX_AGE_MIN:
-        dg("stale")
         return []
-    atr = float(ctx["atr_s"].iloc[n - 1])
-    if not atr > 0:
+    sig = ha_signal(d, off)
+    if not sig:
         return []
-    win = dd.iloc[-(ZONE_HISTORY + 1):]
-    gp = last_gap_pos(win)
-    if gp > 0 and len(win) - 1 - gp < 2:
-        dg("after_gap")
+    plan, why = make_plan(sig, live, ctx)
+    if plan is None:
         return []
-    zones = build_zones(win.iloc[:-1], atr, ctx["keys"], PIV_LEN, ctx["psy"])
-    ctime = dd.index[-1].isoformat()
-    spread = SPREADS.get(sym, SPREAD_PIPS)
-    min_tp = MIN_TP_PIPS.get(sym, 0.0) * pip
-    min_tp1 = MIN_TP1_PIPS.get(sym, 0.0) * pip
-    quiet = QUIET_ON and (now.hour >= QUIET_START or now.hour < QUIET_END)
-    sigs = detect(win, zones, atr) + detect_acc(win, atr)
-    if PB_ON:
-        sigs += detect_pullback(win, atr)
-    out = []
-    for s in sigs:
-        dg("raw")
-        z, dr = s["zone"], s["dir"]
-        h1ok, h4ok = ctx["h1d"] == dr, ctx["h4d"] == dr
-        if z is not None:
-            zok = h1_overlap(z, ctx["h1z"], atr)
-            zscore = z["score"]
-            zk = f"Z|{sym}|{int(round(z['mid'] / max(0.5 * atr, pip)))}|{dr}"
-            # ضد الاتجاه على الفريمين: بس إذا السحب صار عند منطقة قوية على فريم الساعة
-            if not h1ok and not h4ok and not zok:
-                dg("counter_trend")
-                continue
-            zmiss = "المنطقة على فريم الساعة"
-        else:
-            if not (h1ok or h4ok):
-                dg("pb_no_trend")
-                continue
-            zok = near_zone(s["anchor"], zones, atr)
-            zmiss = "التراجع عند منطقة قوية"
-            zscore = 0
-            zk = f"P|{sym}|{int(round(s['anchor'] / max(atr, pip)))}|{dr}"
-        n_ok = int(h1ok) + int(h4ok) + int(zok)
-        if quiet and n_ok < 3:
-            dg("quiet")
-            continue
-        plan, why = make_plan(s, live, atr, pip, zones, spread, ctx["keys"], ctx["swings"], min_tp, min_tp1)
-        if plan is None:
-            dg(why)
-            continue
-        moved = dr * (live - s["ci"])
-        if moved > 0.4 * plan["risk"] or moved < -0.5 * plan["risk"]:
-            dg("chase")
-            continue
-        miss = ([] if h1ok else ["اتجاه الساعة"]) + ([] if h4ok else ["اتجاه 4 ساعات"]) + ([] if zok else [zmiss])
-        s.update({
-            "off": off, "plan": plan, "atr": atr, "n_ok": n_ok, "miss": miss, "quiet": bool(quiet),
-            "rank": n_ok * 100 + zscore + (ACC_BONUS if s["kind"] == "ACC" else 0),
-            "key": f"{sym}|{s['kind']}|{dr}|{ctime}", "zk": zk})
-        out.append(s)
-    return out
+    dr = sig["dir"]
+    ci = float(d["Close"].iloc[sig["pos"]])
+    moved = dr * (live - ci)
+    if moved > 0.4 * plan["risk"] or moved < -0.5 * plan["risk"]:       # السعر ابتعد (ما منطارد)
+        return []
+    buy = dr == 1
+    ctime = d.index[sig["pos"]].isoformat()
+    flip = d.index[sig["pos"] - sig["lag"]].isoformat()
+    return [{
+        "dir": dr, "off": off, "plan": plan,
+        "name": f"هايكن انعكاس ({'شراء' if buy else 'بيع'})",
+        "why": [f"هايكن 15 دقيقة: {sig['run']} شموع {'هابطة' if buy else 'صاعدة'} ثم انعكاس، "
+                f"{'شمعة الانعكاس نفسها' if sig['lag'] == 0 else 'وبعدها شمعة التأكيد'} "
+                f"{'صاعدة بدون ذيل سفلي' if buy else 'هابطة بدون ذيل علوي'}",
+                f"الستوب {'تحت قاع' if buy else 'فوق قمة'} آخر شمعة {'هابطة' if buy else 'صاعدة'}"],
+        "key": f"{sym}|HA|{dr}|{ctime}", "zk": f"E|{sym}|{dr}|{flip}"}]
 
 
 # ---------------- الحالة وتيليجرام ----------------
@@ -797,50 +420,20 @@ def book(t, realized, day):
         sym_day(day, t["sym"])["losses"] += 1
 
 
-def migrate(t):
-    """صفقات الإصدار القديم (v2) بتتحول لتنكمل مراقبتها. v3 بتضل متل ما هي"""
-    if not isinstance(t, dict):
-        return None
-    if t.get("v") == 3:
-        return t
-    if t.get("v") == 2 and "tp2" in t:
-        t = dict(t)
-        t.update({"v": 3, "tp": t["tp2"], "be": t["tp1"], "rr": t.get("r2", 2.0), "tp_d": abs(t["tp2"] - t["entry"]),
-                  "why": [], "miss": [], "quiet": False, "legacy": True})
-        return t
-    return None
-
-
-def rr1_of(t):
-    """الربح بالـ R عند الهدف الأول (للصفقات القديمة: نص المسافة للهدف)"""
-    return t.get("rr1", 0.5 * t["rr"])
-
-
 def entry_msg(c, sym, pip):
     p = c["plan"]
     side = "شراء 🟢" if c["dir"] == 1 else "بيع 🔴"
-    area = f"\nالمنطقة: {fmt(c['area'][0], pip)} – {fmt(c['area'][1], pip)}" if c.get("area") else ""
-    return (f"{side} — {sym}{area}\n"
+    return (f"{side} — {sym}\n"
+            f"السيناريو: {c['name']}\n" + "\n".join("- " + w for w in c["why"]) + "\n\n"
             f"الدخول: {fmt(p['entry'], pip)}\n"
             f"الستوب: {fmt(p['sl'], pip)} ({dist_txt(p['risk'], pip, sym)})\n"
-            f"الهدف الأول: {fmt(p['tp1'], pip)} ({dist_txt(p['tp1_d'], pip, sym)})\n"
-            f"الهدف الثاني: {fmt(p['tp2'], pip)} ({dist_txt(p['tp_d'], pip, sym)})")
+            f"الهدف الأول: {fmt(p['tp1'], pip)} ({dist_txt(p['tp1_d'], pip, sym)}) — {p['desc1']}\n"
+            f"الهدف الثاني: {fmt(p['tp2'], pip)} ({dist_txt(p['tp_d'], pip, sym)}) — {p['desc2']}")
 
 
 def scn_txt(t):
     w = "\n".join("- " + x for x in (t.get("why") or []))
     return f"السيناريو: {t['name']}" + (f"\n{w}" if w else "")
-
-
-def loss_note(t):
-    if t.get("legacy"):
-        return ""
-    n = []
-    if t.get("miss"):
-        n.append("ما كان متوفر: " + "، ".join(t["miss"]))
-    if t.get("quiet"):
-        n.append("الدخول كان بساعة هادية")
-    return "\n".join(n) if n else "كل التأكيدات كانت متوفرة، السوق ببساطة عاكسها."
 
 
 # ---------------- متابعة الصفقات ----------------
@@ -876,46 +469,22 @@ def track(t, ctx):
     return stage, res
 
 
-def reversal_reasons(t, ctx, cands):
+def weak_candle(ctx, t, now):
+    """شمعة هايكن بذيلين (فوق وتحت) بعد الدخول = ضعف بالاتجاه"""
     d = ctx["d15c"]
-    if d.index[-1] < pd.Timestamp(t["time"]).ceil("15min"):
-        return []
-    dr, atr = t["dir"], ctx["atr"]
-    last = d.iloc[-1]
-    lo_, hi_, op_, cl_ = last["Low"], last["High"], last["Open"], last["Close"]
-    rng = hi_ - lo_
-    reasons = []
-    w = d.iloc[-300:]
-    ph, pl = pivots(w, 3)
-    C = w["Close"].values
-    if dr == 1 and len(pl):
-        lv = float(w["Low"].values[pl[-1]])
-        if lv > t["sl"] and C[-1] < lv - 0.05 * atr and C[-4:-1].max() >= lv:
-            reasons.append("كسر هيكل عكسي: شمعة 15 دقيقة أغلقت تحت آخر قاع")
-    if dr == -1 and len(ph):
-        lv = float(w["High"].values[ph[-1]])
-        if lv < t["sl"] and C[-1] > lv + 0.05 * atr and C[-4:-1].min() <= lv:
-            reasons.append("كسر هيكل عكسي: شمعة 15 دقيقة أغلقت فوق آخر قمة")
-    if rng > 0 and rng >= atr and abs(cl_ - op_) >= 0.6 * rng and ((dr == 1 and cl_ < op_) or (dr == -1 and cl_ > op_)):
-        reasons.append("شمعة زخم قوية عكس الصفقة")
-    if rng > 0:
-        for z in ctx["zones"]:
-            if z["score"] < MIN_ZONE_SCORE:
-                continue
-            if dr == 1 and z["bot"] > t["entry"] and hi_ >= z["bot"] - 0.1 * atr and (hi_ - max(op_, cl_)) >= 0.5 * rng and cl_ < z["top"]:
-                reasons.append("رفض عند منطقة مقاومة قوية فوق السعر")
-                break
-            if dr == -1 and z["top"] < t["entry"] and lo_ <= z["top"] + 0.1 * atr and (min(op_, cl_) - lo_) >= 0.5 * rng and cl_ > z["bot"]:
-                reasons.append("رفض عند منطقة دعم قوية تحت السعر")
-                break
-    if any(c["dir"] == -dr for c in cands):
-        reasons.append("ظهر سيناريو معاكس مؤكد")
-    if t.get("h1side") == dr and ctx["h1side"] == -dr:
-        reasons.append("فريم الساعة أغلق ضد الصفقة")
-    return reasons
+    if len(d) < 50 or d.index[-1] < pd.Timestamp(t["time"]).ceil("15min"):
+        return False
+    if (now - (d.index[-1] + pd.Timedelta(minutes=15))).total_seconds() / 60 > 20:
+        return False
+    ha = ha_candles(d).iloc[-1]
+    rg = ha["HH"] - ha["HL"]
+    if rg <= 0:
+        return False
+    up_w, lo_w = ha["HH"] - max(ha["HO"], ha["HC"]), min(ha["HO"], ha["HC"]) - ha["HL"]
+    return up_w >= EXIT_WICK * rg and lo_w >= EXIT_WICK * rg
 
 
-def manage(st, sym, ctx, cands, now, day):
+def manage(st, sym, ctx, now, day):
     pip, live = ctx["pip"], ctx["live"]
     still = []
     for t in st["open"]:
@@ -926,55 +495,41 @@ def manage(st, sym, ctx, cands, now, day):
         risk = t["risk"]
         stage, res = track(t, ctx)
         r_now = t["dir"] * (live - t["entry"]) / risk
-        r1 = rr1_of(t)
         part = TP1_PART
-        # الربح المحقق إذا الصفقة سكّرت هلأ: بعد الهدف الأول جزء منها مسكّر بالهدف الأول
-        r_if_close = r_now if stage < 1 else part * r1 + (1 - part) * r_now
-
         if stage >= 1 and t.get("stage", 0) < 1:
             t["stage"] = 1
             if res is None:
                 tg(f"🎯 الهدف الأول وصل ✅ — {sym} ({side})\n"
                    f"حرّك الستوب لسعر الدخول {fmt(t['entry'], pip)}")
-
         if res == "TP":
-            realized = part * r1 + (1 - part) * t["rr"]
+            realized = part * t["rr1"] + (1 - part) * t["rr"]
             book(t, realized, day)
             tg(f"🎯🎯 الهدف الثاني وصل ✅ — {sym} ({side})\n"
                f"{dist_txt(abs(t['tp'] - t['entry']), pip, sym)} ({realized:+.1f}R إجمالي)\n\n" + scn_txt(t))
             continue
         if res == "BE":
-            realized = part * r1
+            realized = part * t["rr1"]
             book(t, realized, day)
             tg(f"↩️ سكّرت على الدخول بعد الهدف الأول — {sym} ({side})\n"
                f"ربح جزئي من الهدف الأول ({realized:+.1f}R)\n\n" + scn_txt(t))
             continue
         if res == "SL":
             book(t, -1.0, day)
-            note = loss_note(t)
-            tg(f"❌ خسرت — {sym} ({side})\n"
-               f"-{dist_txt(risk, pip, sym)} (-1R)\n\n" + scn_txt(t) + (f"\n\n{note}" if note else ""))
+            tg(f"❌ خسرت — {sym} ({side})\n-{dist_txt(risk, pip, sym)} (-1R)\n\n" + scn_txt(t))
             continue
-
-        # الصفقة بتنتهي بعد EXPIRE_HOURS ساعات سوق مفتوح (الإغلاق ما بينحسب)
         age = int((ctx["d15c"].index >= pd.Timestamp(t["time"]).ceil("15min")).sum())
+        r_if_close = r_now if stage < 1 else part * t["rr1"] + (1 - part) * r_now
         if age >= EXPIRE_HOURS * 4:
             book(t, r_if_close, day)
             tg(f"⌛ انتهت الصفقة بدون هدف ثاني أو ستوب بعد {EXPIRE_HOURS:g} ساعات — {sym} ({side})\n"
                f"النتيجة عند السعر الحالي: {r_if_close:+.1f}R\n\n" + scn_txt(t))
             continue
-
-        # تنبيه التسكير: بس وهي بربح
-        stg = t.get("stage", 0)
-        if (r_now >= MIN_PROFIT_R) or (stg >= 1 and r_now > 0.1):
-            reasons = reversal_reasons(t, ctx, cands)
-            if len(reasons) >= REV_MIN_REASONS:
-                book(t, r_if_close, day)
-                gain = abs(live - t["entry"])
-                tg(f"⚠️ سكّر هلأ — {sym} ({side})\n"
-                   f"بربح {dist_txt(gain, pip, sym)} ({r_if_close:+.1f}R) والسوق عم يعكس:\n- " + "\n- ".join(reasons) + "\n\n"
-                   + scn_txt(t))
-                continue
+        if r_now >= EXIT_MIN_R and weak_candle(ctx, t, now):
+            book(t, r_if_close, day)
+            tg(f"⚠️ سكّر هلأ — {sym} ({side})\n"
+               f"طلعت شمعة هايكن بذيلين (ضعف) وإنت بربح {dist_txt(abs(live - t['entry']), pip, sym)} "
+               f"({r_if_close:+.1f}R)\nالبوت سكّرها عندو وبيدوّر على فرصة جديدة.\n\n" + scn_txt(t))
+            continue
         still.append(t)
     st["open"] = still
 
@@ -983,33 +538,22 @@ def try_open(st, sym, ctx, cands, now, day):
     if any(t["sym"] == sym for t in st["open"]):
         return "في صفقة مفتوحة عم يراقبها"
     sd = sym_day(day, sym)
-    if sd["losses"] >= MAX_LOSSES:
+    if MAX_LOSSES and sd["losses"] >= MAX_LOSSES:
         return f"وصل حد الخسائر اليومي ({MAX_LOSSES})"
-    if sd["sent"] >= MAX_PER_DAY:
+    if MAX_PER_DAY and sd["sent"] >= MAX_PER_DAY:
         return f"وصل حد الإشارات اليومي ({MAX_PER_DAY})"
     if not ctx["fresh"]:
         return "السوق مسكّر حالياً"
-    if SESSION_ON and not (SESSION_START <= now.hour < SESSION_END):
-        return f"خارج ساعات التداول ({SESSION_START}:00 - {SESSION_END}:00 UTC)"
-    ok = []
-    for c in cands:
-        if c["key"] in st["sig"]:
-            continue
-        zt = st["sig"].get(c["zk"])
-        if zt and (now - pd.Timestamp(zt)).total_seconds() < ZONE_LOCK_HOURS * 3600:
-            dg("zone_locked")
-            continue
-        ok.append(c)
+    ok = [c for c in cands if c["key"] not in st["sig"] and c["zk"] not in st["sig"]]
     if not ok:
-        return "ما في سيناريو مؤكد حالياً"
-    best = max(ok, key=lambda x: (x["rank"], -x["off"]))
+        return "ما في إشارة جديدة"
+    best = min(ok, key=lambda x: x["off"])                  # الأحدث
     p, pip = best["plan"], ctx["pip"]
     tg(entry_msg(best, sym, pip))
     st["open"].append({"v": 3, "sym": sym, "dir": best["dir"], "entry": p["entry"], "sl": p["sl"], "tp": p["tp"],
                        "tp1": p["tp1"], "tp2": p["tp2"], "be": p["be"], "risk": p["risk"], "tp_d": p["tp_d"],
-                       "rr1": p["rr1"], "rr": p["rr"], "name": best["name"],
-                       "why": best["why"], "miss": best["miss"], "quiet": best["quiet"],
-                       "kind": KIND_AR[best["kind"]], "time": now.isoformat(), "stage": 0, "h1side": ctx["h1side"]})
+                       "rr1": p["rr1"], "rr": p["rr"], "name": best["name"], "why": best["why"],
+                       "kind": "هايكن", "time": now.isoformat(), "stage": 0})
     st["sig"][best["key"]] = now.isoformat()
     st["sig"][best["zk"]] = now.isoformat()
     day["sent"] += 1
@@ -1017,18 +561,8 @@ def try_open(st, sym, ctx, cands, now, day):
     return ""
 
 
-def zones_text(ctx):
-    px, pip, sym = ctx["live"], ctx["pip"], ctx["sym"]
-    sz = [z for z in ctx["zones"] if z["score"] >= MIN_ZONE_SCORE]
-    up = sorted([z for z in sz if z["bot"] > px], key=lambda z: z["bot"] - px)[:2]
-    dn = sorted([z for z in sz if z["top"] < px], key=lambda z: px - z["top"])[:2]
-    lines = [f"فوق: {fmt(z['mid'], pip)} {'★' * z['stars']} {'مقاومة' if z['role'] == -1 else 'دعم'} (+{dist_txt(z['bot'] - px, pip, sym)})" for z in up]
-    lines += [f"تحت: {fmt(z['mid'], pip)} {'★' * z['stars']} {'دعم' if z['role'] == 1 else 'مقاومة'} (-{dist_txt(px - z['top'], pip, sym)})" for z in dn]
-    return "\n".join(lines) if lines else "ما في مناطق قوية قريبة"
-
-
 # ---------------- التشغيل ----------------
-def main():
+def run(now=None):
     if env("TEST_MSG") == "1":
         tg("✅ البوت شغال وبيوصلك على تيليجرام.")
         return
@@ -1036,27 +570,27 @@ def main():
         print("TWELVE_DATA_API_KEY غير موجود")
         tg("⚠️ مفتاح TWELVE_DATA_API_KEY غير موجود بالـ secrets")
         sys.exit(0)
-    DIAG.clear()
-    now = pd.Timestamp(datetime.now(timezone.utc).replace(tzinfo=None))
+    now = now if now is not None else pd.Timestamp(datetime.now(timezone.utc).replace(tzinfo=None))
     today = now.strftime("%Y-%m-%d")
     st = load()
     for k, dflt in (("open", []), ("days", {}), ("sig", {})):
         if not isinstance(st.get(k), type(dflt)):
             st[k] = dflt
-    st["open"] = [m for m in (migrate(t) for t in st["open"]) if m and m.get("sym") in SYMBOLS]
+    st["open"] = [t for t in st["open"] if isinstance(t, dict) and t.get("v") == 3 and t.get("sym") in SYMBOLS]
     day = st["days"].setdefault(today, {})
     for k, v in (("sent", 0), ("wins", 0), ("losses", 0), ("r", 0.0), ("summary", False)):
         day.setdefault(k, v)
     day.setdefault("t", {})
     day.setdefault("ps", {})
-    day.setdefault("diag", {})
     for k in list(st["days"].keys())[:-30]:
         del st["days"][k]
     st["sig"] = {k: v for k, v in st["sig"].items() if (now - pd.Timestamp(v)).total_seconds() < 86400}
     st.setdefault("last_msg", now.isoformat())
     if st.get("version") != BOT_VERSION:
-        tg("✅ البوت شغال — النسخة الجديدة (سحب سيولة + تأكيد كسر هيكل، هدفين، صفقة وحدة بالوقت).\n"
-           "رح توصلك الإشارات هون، وملخص يومي الساعة 21 UTC.")
+        tg("✅ البوت شغال — نسخة الهايكن (بسيطة).\n"
+           "القاعدة: بعد حركة صاعدة، شمعة هايكن 15 دقيقة هابطة بدون ذيل علوي = بيع (والعكس شراء).\n"
+           "الستوب خلف آخر شمعة من الحركة، الهدف الأول أول مستوى والثاني اللي بعدو.\n"
+           "رسالة عند كل هدف وعند الستوب. ملخص يومي الساعة 21 UTC.")
         st["version"] = BOT_VERSION
 
     ctxs = {}
@@ -1080,15 +614,11 @@ def main():
 
     reasons = {}
     for sym, ctx in ctxs.items():
+        manage(st, sym, ctx, now, day)
         cands = []
         for off in range(LOOKBACK):
             cands += evaluate(ctx, off, now)
-        manage(st, sym, ctx, cands, now, day)
         reasons[sym] = try_open(st, sym, ctx, cands, now, day)
-
-    # تراكم أسباب الرفض خلال اليوم (للملخص اليومي)
-    for k, v in DIAG.items():
-        day["diag"][k] = day["diag"].get(k, 0) + v
 
     if now.hour >= 21 and not day["summary"]:
         tot = {}
@@ -1097,31 +627,19 @@ def main():
                 a = tot.setdefault(k, [0, 0])
                 a[0] += v[0]
                 a[1] += v[1]
-        dlines = "\n".join(f"- {DIAG_LABELS.get(k, k)}: {v}"
-                           for k, v in sorted(day["diag"].items(), key=lambda kv: -kv[1])[:6])
-        tg(f"📊 ملخص {today} (UTC)\nإشارات: {day['sent']} | رابحة: {day['wins']} | خاسرة: {day['losses']} | صافي: {day['r']:+.1f}R\n"
-           "اليوم حسب السيناريو: " + (" | ".join(f"{k} {v[0]}✅/{v[1]}❌" for k, v in day["t"].items()) or "لا يوجد")
-           + f"\n\nآخر {len(st['days'])} يوم حسب السيناريو:\n"
-           + ("\n".join(f"{k}: {v[0]}✅ / {v[1]}❌" for k, v in tot.items()) or "لا يوجد")
-           + (f"\n\nأكتر أسباب الرفض اليوم:\n{dlines}" if dlines else ""))
+        tg(f"📊 ملخص {today} (UTC)\nإشارات: {day['sent']} | رابحة: {day['wins']} | خاسرة: {day['losses']} | صافي: {day['r']:+.1f}R"
+           f"\n\nآخر {len(st['days'])} يوم:\n" + ("\n".join(f"{k}: {v[0]}✅ / {v[1]}❌" for k, v in tot.items()) or "لا يوجد"))
         day["summary"] = True
 
-    print("DIAG", DIAG)
     fresh_syms = [s for s, c in ctxs.items() if c["fresh"]]
     if (HEARTBEAT_HOURS > 0 and fresh_syms and not SENT
             and (now - pd.Timestamp(st["last_msg"])).total_seconds() >= HEARTBEAT_HOURS * 3600):
-        nm = lambda v: "صاعد" if v == 1 else "هابط" if v == -1 else "عرضي"
-        dtxt = "\n".join(f"- {DIAG_LABELS.get(k, k)}: {v}" for k, v in sorted(DIAG.items(), key=lambda kv: -kv[1])[:5])
         parts = []
         for s0 in fresh_syms:
             c0 = ctxs[s0]
-            parts.append(f"▪️ {s0}\nالسعر: {fmt(c0['live'], c0['pip'])}\n"
-                         f"اتجاه الساعة: {nm(c0['h1d'])} | 4 ساعات: {nm(c0['h4d'])}\n"
-                         f"الحالة: {reasons.get(s0) or 'ما في سيناريو مؤكد حالياً'}\n"
-                         f"أقرب مناطق قوية:\n{zones_text(c0)}")
+            parts.append(f"▪️ {s0}\nالسعر: {fmt(c0['live'], c0['pip'])}\nالحالة: {reasons.get(s0) or 'ما في إشارة جديدة'}")
         tg(f"🫀 البوت شغال ({now:%H:%M} UTC)\n\n" + "\n\n".join(parts) + "\n\n"
-           f"اليوم: إشارات {day['sent']} | رابحة {day['wins']} | خاسرة {day['losses']} | صافي {day['r']:+.1f}R"
-           + (f"\n\nليش انرفضت إشارات:\n{dtxt}" if dtxt else ""))
+           f"اليوم: إشارات {day['sent']} | رابحة {day['wins']} | خاسرة {day['losses']} | صافي {day['r']:+.1f}R")
     if SENT:
         st["last_msg"] = now.isoformat()
     save(st)
@@ -1129,7 +647,7 @@ def main():
 
 if __name__ == "__main__":
     try:
-        main()
+        run()
     except Exception:
         import traceback
         tb = traceback.format_exc()
