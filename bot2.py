@@ -5,6 +5,7 @@
 المحرك: السعر بيسحب سيولة مستوى (قمة/قاع الآسيوية، قمة/قاع لندن، قمة/قاع أمس) ويرجع، ثم شمعة 5 دقايق
 بتكسر آخر قمة/قاع صغير قبل السحب (كسر هيكل). الستوب خلف السحب، هدفين، صفقة وحدة بالوقت.
 المحركات القديمة (سحب مناطق M15 + اندفاع وتراجع) بتضل شغالة بنفس الوقت."""
+import math
 import sys
 import time
 from datetime import datetime, timezone
@@ -36,20 +37,24 @@ BT_DAYS = B.envi("BT_DAYS", 14)
 # ---- استراتيجية الهايكن (انسحاب): انعكاس + شمعة تأكيد بدون ذيل، عند منطقة انعكاس أو بعد ارتداد منها ----
 HA_ON = B.env("HA_ON", "1") == "1"
 HA_MIN_RUN = B.envi("HA_MIN_RUN", 2)             # أقل عدد شموع عكسية قبل الانعكاس
-HA_WICK_TOL = B.envf("HA_WICK_TOL", 0.05)        # أكبر ذيل مسموح (من حجم الشمعة) لتعتبر "بدون ذيل"
-HA_ZONE_LOOK = B.envi("HA_ZONE_LOOK", 8)         # كم شمعة 15د لورا نفتش عن لمسة منطقة (2 ساعة)
-HA_ZONE_SCORE = B.envi("HA_ZONE_SCORE", 5)       # أقل قوة منطقة
-HA_PIERCE_ATR = B.envf("HA_PIERCE_ATR", 1.2)     # أقصى تجاوز للمنطقة مسموح (x ATR)
-HA_MIN_TP_PIPS = B.envf("HA_MIN_TP_PIPS", 100)   # أقل مسافة للهدف (100 بيب = 10$)
-HA_MIN_RR = B.envf("HA_MIN_RR", 1.2)
+HA_WICK_TOL = B.envf("HA_WICK_TOL", 0.10)        # أكبر ذيل مسموح (من حجم الشمعة) لتعتبر "بدون ذيل"
+HA_ZONE_LOOK = B.envi("HA_ZONE_LOOK", 16)        # كم شمعة 15د لورا نفتش عن لمسة منطقة (2 ساعة)
+HA_ZONE_SCORE = B.envi("HA_ZONE_SCORE", 3)       # أقل قوة منطقة
+HA_PIERCE_ATR = B.envf("HA_PIERCE_ATR", 2.0)     # أقصى تجاوز للمنطقة مسموح (x ATR)
+HA_MIN_TP_PIPS = B.envf("HA_MIN_TP_PIPS", 0)    # أقل مسافة للهدف (100 بيب = 10$)
+HA_MIN_RR = B.envf("HA_MIN_RR", 0)
+HA_MIN_TP_ATR = B.envf("HA_MIN_TP_ATR", 0.3)      # أقل مسافة للهدف (x ATR) عشان ما يكون الهدف لاصق بالدخول
+HA_CHASE_R = B.envf("HA_CHASE_R", 1.0)            # بيتجاهل الإشارة إذا السعر ابتعد أكتر من هيك (x الستوب) عن إغلاق الشمعة
 HA_MIN_RISK_ATR = B.envf("HA_MIN_RISK_ATR", 0.5)
-HA_MAX_RISK_ATR = B.envf("HA_MAX_RISK_ATR", 3.5)
+HA_MAX_RISK_ATR = B.envf("HA_MAX_RISK_ATR", 0)      # 0 = بدون سقف للستوب
 HA_MAX_AGE = B.envi("HA_MAX_AGE", 25)            # أقصى عمر لشمعة التأكيد بالدقايق
+HA_ZONE_REQ = B.env("HA_ZONE_REQ", "0") == "1"      # 1 = بس عند منطقة/ارتداد (مطفي: بدون حواجز)
+HA_DEBUG = B.env("HA_DEBUG", "1") == "1"            # رسالة لما تظهر شمعة مطابقة وما بتنفتح صفقة (مع السبب)
 HA_TREND = B.env("HA_TREND", "0") == "1"         # 1 = بس مع اتجاه الساعة أو 4 ساعات
 HA_EXIT_ON = B.env("HA_EXIT_ON", "1") == "1"     # تنبيه تسكير عند شمعة بذيلين
 HA_EXIT_WICK = B.envf("HA_EXIT_WICK", 0.12)
 HA_EXIT_MIN_R = B.envf("HA_EXIT_MIN_R", 0.3)
-KEEP_KINDS = {x.strip().upper() for x in B.env("KEEP_KINDS", "SWEEP").split(",") if x.strip()}
+KEEP_KINDS = {x.strip().upper() for x in B.env("KEEP_KINDS", "NONE").split(",") if x.strip()}
 
 KEY_AR = {"PDH": "قمة أمس", "PDL": "قاع أمس", "PWH": "قمة الأسبوع الماضي", "PWL": "قاع الأسبوع الماضي",
           "PMH": "قمة الشهر الماضي", "PML": "قاع الشهر الماضي"}
@@ -62,7 +67,7 @@ B.DIAG_LABELS.update({
     "ha_no_zone": "هايكن: مرفوض (مو عند منطقة انعكاس ولا بعد ارتداد)",
     "ha_counter_trend": "هايكن: مرفوض (ضد الاتجاه)",
 })
-B.BOT_VERSION = "2026-11-05-heikin"
+B.BOT_VERSION = "2026-11-06-heikin3"
 
 
 _SEEN = set()
@@ -233,8 +238,9 @@ def ha_candles(d, n_use=800):
 
 
 def ha_signal(d, off):
-    """شموع حمراء -> أول شمعة خضراء (انعكاس) -> شمعة تأكيد خضراء بدون ذيل سفلي = شراء. العكس للبيع.
-    الشمعة k هي شمعة التأكيد (آخر مغلقة، أو قبلها بواحدة إذا off=1). المفتاح "k" بالنتيجة = موضعها بـ d نفسو"""
+    """بعد شموع صاعدة (أو هابطة): شمعة الانعكاس نفسها، أو الشمعة اللي بعدها، إذا سكّرت بدون ذيل = دخول عكس الحركة.
+    شراء: شموع حمراء -> شمعة خضراء بدون ذيل سفلي. بيع: شموع خضراء -> شمعة حمراء بدون ذيل علوي.
+    الستوب خلف آخر شمعة من الحركة اللي انعكست. المفتاح "k" بالنتيجة = موضع شمعة الإشارة بـ d نفسو"""
     ha = ha_candles(d)
     n = len(ha)
     k = n - 1 - off
@@ -248,18 +254,24 @@ def ha_signal(d, off):
     r = HH[k] - HL[k]
     if r <= 0:
         return None
-    if bull[k] and bull[k - 1] and all(bear[k - 2 - j] for j in range(HA_MIN_RUN)):
-        if (min(HO[k], HC[k]) - HL[k]) <= HA_WICK_TOL * r:
+    for dr in (1, -1):
+        same, opp = (bull, bear) if dr == 1 else (bear, bull)
+        if not same[k]:
+            continue
+        wick = (min(HO[k], HC[k]) - HL[k]) if dr == 1 else (HH[k] - max(HO[k], HC[k]))
+        if wick > HA_WICK_TOL * r:
+            continue
+        for lag in (0, 1):                      # 0 = شمعة الانعكاس نفسها، 1 = الشمعة اللي بعدها
+            if lag == 1 and not same[k - 1]:
+                continue
+            run_end = k - lag - 1
+            if run_end - HA_MIN_RUN + 1 < 0 or not all(opp[run_end - j] for j in range(HA_MIN_RUN)):
+                continue
             run = 0
-            while k - 2 - run >= 0 and bear[k - 2 - run] and run < 30:
+            while run_end - run >= 0 and opp[run_end - run] and run < 30:
                 run += 1
-            return {"dir": 1, "k": len(d) - 1 - off, "anchor": float(HL[k - 2]), "run": run}
-    if bear[k] and bear[k - 1] and all(bull[k - 2 - j] for j in range(HA_MIN_RUN)):
-        if (HH[k] - max(HO[k], HC[k])) <= HA_WICK_TOL * r:
-            run = 0
-            while k - 2 - run >= 0 and bull[k - 2 - run] and run < 30:
-                run += 1
-            return {"dir": -1, "k": len(d) - 1 - off, "anchor": float(HH[k - 2]), "run": run}
+            anchor = HL[run_end] if dr == 1 else HH[run_end]
+            return {"dir": dr, "k": len(d) - 1 - off, "anchor": float(anchor), "run": run, "lag": lag}
     return None
 
 
@@ -286,6 +298,10 @@ def ha_zone_touch(ctx, d, k, dr):
         z = {"top": kv, "bot": kv}
         if hit_zone(z):
             return f"{KEY_AR.get(nm, nm)} ({B.fmt(kv, pip)})", kv
+    major = float((ctx.get("psy") or (10.0, 50.0))[1])
+    lvl = round(ext / major) * major
+    if abs(ext - lvl) <= 0.6 * atr and ((dr == 1 and cl > lvl) or (dr == -1 and cl < lvl)):
+        return f"رقم نفسي كبير ({B.fmt(lvl, pip)})", lvl
     return None, None
 
 
@@ -294,15 +310,15 @@ def ha_plan(ctx, sig, live):
     spread = B.SPREADS.get(sym, B.SPREAD_PIPS)
     sl = sig["anchor"] - dr * (0.1 * atr + spread * pip)
     if (dr == 1 and sl >= live) or (dr == -1 and sl <= live):
-        return None, "stop_wrong_side", ""
+        return None, "stop_wrong_side", "الستوب بالاتجاه الغلط"
     risk = abs(live - sl)
     floor = HA_MIN_RISK_ATR * atr
     if risk < floor:
         sl, risk = live - dr * floor, floor
-    if risk > HA_MAX_RISK_ATR * atr:
-        return None, "risk_far", ""
+    if HA_MAX_RISK_ATR > 0 and risk > HA_MAX_RISK_ATR * atr:
+        return None, "risk_far", f"الستوب بعيد ({B.dist_txt(risk, pip, sym)} = {risk / atr:.1f} ATR، الأقصى {HA_MAX_RISK_ATR:g})"
     buf = 0.1 * atr
-    need = max(HA_MIN_TP_PIPS * pip, HA_MIN_RR * risk)
+    need = max(HA_MIN_TP_PIPS * pip, HA_MIN_RR * risk, HA_MIN_TP_ATR * atr)
     lv = []                                        # (مسافة، وصف) لأقرب مستويات قدام السعر
     for z in ctx["zones"]:
         if z["score"] >= HA_ZONE_SCORE:
@@ -318,6 +334,10 @@ def ha_plan(ctx, sig, live):
         d_ = (kv - live) * dr
         if d_ > 0:
             lv.append((d_, f"{KEY_AR.get(nm, nm)} ({B.fmt(kv, pip)})"))
+    major = float((ctx.get("psy") or (10.0, 50.0))[1])
+    rl = (math.ceil(live / major) * major) if dr == 1 else (math.floor(live / major) * major)
+    if (rl - live) * dr > 0:
+        lv.append(((rl - live) * dr, f"رقم نفسي كبير ({B.fmt(rl, pip)})"))
     ok = [x for x in lv if x[0] - buf >= need]
     if ok:
         d_, desc = min(ok)
@@ -327,6 +347,27 @@ def ha_plan(ctx, sig, live):
     tp = live + dr * tp_d
     return {"entry": live, "sl": sl, "tp1": tp, "tp2": tp, "tp": tp, "be": tp, "risk": risk, "tp1_d": tp_d,
             "tp_d": tp_d, "rr1": tp_d / risk, "rr": tp_d / risk}, "", note
+
+
+_ST = {"st": None}
+
+
+def _dbg(sym, ctime, dr, text):
+    """رسالة وحدة لكل شمعة: ظهر سيناريو الهايكن بس ما انفتحت صفقة (مع السبب)"""
+    if not HA_DEBUG:
+        return
+    st = _ST.get("st")
+    if st is None:
+        return
+    seen = st.setdefault("ha_dbg", {})
+    key = f"{sym}|{ctime}"
+    if key in seen:
+        return
+    seen[key] = datetime.now(timezone.utc).isoformat()
+    if len(seen) > 300:
+        for k_ in sorted(seen, key=seen.get)[:150]:
+            del seen[k_]
+    B.tg(f"👀 هايكن: ظهرت شمعة {'شراء' if dr == 1 else 'بيع'} مطابقة بس ما انفتحت صفقة\nالسبب: {text}")
 
 
 def ha_cands(ctx, off, now):
@@ -344,32 +385,37 @@ def ha_cands(ctx, off, now):
     _fd("ha_raw", sym, ctime, "")
     if HA_TREND and ctx["h1d"] != dr and ctx["h4d"] != dr:
         _fd("ha_counter_trend", sym, ctime, "")
+        _dbg(sym, ctime, dr, "ضد اتجاه الساعة و4 ساعات")
         return []
     zdesc, zmid = ha_zone_touch(ctx, d, k, dr)
-    if not zdesc:
+    if not zdesc and HA_ZONE_REQ:
         _fd("ha_no_zone", sym, ctime, "")
+        _dbg(sym, ctime, dr, "مو عند منطقة/مستوى ولا بعد ارتداد منها (آخر ساعات)")
         return []
     live = ctx["live"]
     plan, why, note = ha_plan(ctx, sig, live)
     if plan is None:
         _fd(why, sym, ctime, "")
+        _dbg(sym, ctime, dr, note)
         return []
     ci = float(d["Close"].iloc[k])
     moved = dr * (live - ci)
-    if moved > 0.4 * plan["risk"] or moved < -0.5 * plan["risk"]:
+    if HA_CHASE_R > 0 and abs(moved) > HA_CHASE_R * plan["risk"]:
         _fd("chase", sym, ctime, "")
+        _dbg(sym, ctime, dr, f"السعر ابتعد عن إغلاق الشمعة ({B.dist_txt(abs(live - ci), ctx['pip'], sym)})")
         return []
     buy = dr == 1
     return [{
         "kind": "HA", "dir": dr, "zone": None, "anchor": sig["anchor"], "ci": ci, "info": "", "area": None,
-        "name": f"هايكن انعكاس ({'شراء' if buy else 'بيع'}) عند منطقة/ارتداد", "off": off, "plan": plan, "atr": atr,
+        "name": f"هايكن انعكاس ({'شراء' if buy else 'بيع'})", "off": off, "plan": plan, "atr": atr,
         "n_ok": None, "miss": [], "quiet": False, "rank": 350,
-        "why": [f"هايكن 15 دقيقة: {sig['run']} شموع {'هابطة' if buy else 'صاعدة'} ثم شمعة {'صاعدة' if buy else 'هابطة'} (انعكاس)، "
-                f"وبعدها شمعة تأكيد {'صاعدة بدون ذيل سفلي' if buy else 'هابطة بدون ذيل علوي'}",
-                f"الانعكاس عند {zdesc}",
+        "why": [f"هايكن 15 دقيقة: {sig['run']} شموع {'هابطة' if buy else 'صاعدة'} ثم انعكاس، "
+                f"{'شمعة الانعكاس نفسها' if sig['lag'] == 0 else 'وبعدها شمعة التأكيد'} "
+                f"{'صاعدة بدون ذيل سفلي' if buy else 'هابطة بدون ذيل علوي'}",
+                *([f"الانعكاس عند {zdesc}"] if zdesc else []),
                 f"الستوب {'تحت قاع' if buy else 'فوق قمة'} آخر شمعة {'هابطة' if buy else 'صاعدة'}",
                 note],
-        "key": f"{sym}|HA|{dr}|{ctime}", "zk": f"H|{sym}|{dr}|{int(round(zmid / max(atr, ctx['pip'])))}"}]
+        "key": f"{sym}|HA|{dr}|{ctime}", "zk": f"H|{sym}|{dr}|{ctime}"}]
 
 
 def ha_exit(st, sym, ctx, now, day):
@@ -432,6 +478,8 @@ def entry_msg2(c, sym, pip):
 _orig_fetch = B.fetch
 _orig_eval = B.evaluate
 _orig_manage = B.manage
+_orig_load = B.load
+_orig_try_open = B.try_open
 _orig_tg = B.tg
 
 
@@ -466,11 +514,29 @@ def manage2(st, sym, ctx, cands, now, day):
     return _orig_manage(st, sym, ctx, cands, now, day)
 
 
+def load2():
+    st = _orig_load()
+    _ST["st"] = st
+    return st
+
+
+def try_open2(st, sym, ctx, cands, now, day):
+    r = _orig_try_open(st, sym, ctx, cands, now, day)
+    try:
+        if r and r.startswith(("في صفقة", "وصل حد", "السوق", "خارج")):
+            c0 = next((c for c in cands if c.get("kind") == "HA"), None)
+            if c0:
+                _dbg(sym, c0["key"].split("|")[-1], c0["dir"], r)
+    except Exception as e:
+        print("try_open note failed:", repr(e))
+    return r
+
+
 def tg2(text):
     if isinstance(text, str) and text.startswith("✅ البوت شغال — النسخة الجديدة"):
         text = ("✅ البوت شغال — نسخة الهايكن.\n"
-                "المحرك الأساسي: شموع هايكن 15 دقيقة (انعكاس + شمعة تأكيد بدون ذيل) عند منطقة انعكاس أو بعد ارتداد منها.\n"
-                "معو سحب السيولة القديم. تنبيه تسكير عند شمعة بذيلين. ملخص يومي الساعة 21 UTC.")
+                "القاعدة: بعد حركة صاعدة، شمعة هايكن 15 دقيقة هابطة بدون ذيل علوي = بيع (والعكس شراء).\n"
+                "الستوب خلف آخر شمعة من الحركة، والهدف أول مستوى. تنبيه تسكير عند شمعة بذيلين. ملخص يومي الساعة 21 UTC.")
     return _orig_tg(text)
 
 
@@ -665,6 +731,8 @@ def run():
     B.fetch = fetch2
     B.evaluate = eval2
     B.manage = manage2
+    B.load = load2
+    B.try_open = try_open2
     B.tg = tg2
     B.entry_msg = entry_msg2
     B.main()
