@@ -37,7 +37,7 @@ BT_DAYS = B.envi("BT_DAYS", 14)
 # ---- استراتيجية الهايكن (انسحاب): انعكاس + شمعة تأكيد بدون ذيل، عند منطقة انعكاس أو بعد ارتداد منها ----
 HA_ON = B.env("HA_ON", "1") == "1"
 HA_MIN_RUN = B.envi("HA_MIN_RUN", 2)             # أقل عدد شموع عكسية قبل الانعكاس
-HA_WICK_TOL = B.envf("HA_WICK_TOL", 0.10)        # أكبر ذيل مسموح (من حجم الشمعة) لتعتبر "بدون ذيل"
+HA_WICK_TOL = B.envf("HA_WICK_TOL", 0.15)        # أكبر ذيل مسموح (من حجم الشمعة) لتعتبر "بدون ذيل"
 HA_ZONE_LOOK = B.envi("HA_ZONE_LOOK", 16)        # كم شمعة 15د لورا نفتش عن لمسة منطقة (2 ساعة)
 HA_ZONE_SCORE = B.envi("HA_ZONE_SCORE", 3)       # أقل قوة منطقة
 HA_PIERCE_ATR = B.envf("HA_PIERCE_ATR", 2.0)     # أقصى تجاوز للمنطقة مسموح (x ATR)
@@ -47,7 +47,8 @@ HA_MIN_TP_ATR = B.envf("HA_MIN_TP_ATR", 0.3)      # أقل مسافة للهدف
 HA_CHASE_R = B.envf("HA_CHASE_R", 1.0)            # بيتجاهل الإشارة إذا السعر ابتعد أكتر من هيك (x الستوب) عن إغلاق الشمعة
 HA_MIN_RISK_ATR = B.envf("HA_MIN_RISK_ATR", 0.5)
 HA_MAX_RISK_ATR = B.envf("HA_MAX_RISK_ATR", 0)      # 0 = بدون سقف للستوب
-HA_MAX_AGE = B.envi("HA_MAX_AGE", 25)            # أقصى عمر لشمعة التأكيد بالدقايق
+HA_SCAN = B.envi("HA_SCAN", 4)                  # كم شمعة مغلقة نفتش ورا (GitHub أحياناً بيتأخر بالتشغيل)
+HA_MAX_AGE = B.envi("HA_MAX_AGE", 75)            # أقصى عمر لشمعة التأكيد بالدقايق
 HA_ZONE_REQ = B.env("HA_ZONE_REQ", "0") == "1"      # 1 = بس عند منطقة/ارتداد (مطفي: بدون حواجز)
 HA_DEBUG = B.env("HA_DEBUG", "1") == "1"            # رسالة لما تظهر شمعة مطابقة وما بتنفتح صفقة (مع السبب)
 HA_TREND = B.env("HA_TREND", "0") == "1"         # 1 = بس مع اتجاه الساعة أو 4 ساعات
@@ -67,7 +68,7 @@ B.DIAG_LABELS.update({
     "ha_no_zone": "هايكن: مرفوض (مو عند منطقة انعكاس ولا بعد ارتداد)",
     "ha_counter_trend": "هايكن: مرفوض (ضد الاتجاه)",
 })
-B.BOT_VERSION = "2026-11-06-heikin3"
+B.BOT_VERSION = "2026-11-06-heikin4"
 
 
 _SEEN = set()
@@ -370,7 +371,7 @@ def _dbg(sym, ctime, dr, text):
     B.tg(f"👀 هايكن: ظهرت شمعة {'شراء' if dr == 1 else 'بيع'} مطابقة بس ما انفتحت صفقة\nالسبب: {text}")
 
 
-def ha_cands(ctx, off, now):
+def _ha_one(ctx, off, now):
     if not HA_ON:
         return []
     d = ctx["d15c"]
@@ -415,7 +416,42 @@ def ha_cands(ctx, off, now):
                 *([f"الانعكاس عند {zdesc}"] if zdesc else []),
                 f"الستوب {'تحت قاع' if buy else 'فوق قمة'} آخر شمعة {'هابطة' if buy else 'صاعدة'}",
                 note],
-        "key": f"{sym}|HA|{dr}|{ctime}", "zk": f"H|{sym}|{dr}|{ctime}"}]
+        "key": f"{sym}|HA|{dr}|{ctime}", "zk": f"H|{sym}|{dr}|{d.index[k - sig['lag']].isoformat()}"}]
+
+
+_HA_STATUS = {}
+
+
+def ha_status(ctx):
+    """آخر 4 شموع هايكن (بتوقيت بيروت) مع نسبة الذيل، لتقارنها بشارتك"""
+    ha = ha_candles(ctx["d15c"]).tail(4)
+    lines = []
+    for ts, r in ha.iterrows():
+        rg = r["HH"] - r["HL"]
+        if rg <= 0:
+            continue
+        up = (r["HH"] - max(r["HO"], r["HC"])) / rg * 100
+        lo = (min(r["HO"], r["HC"]) - r["HL"]) / rg * 100
+        try:
+            lab = ts.tz_localize("UTC").tz_convert("Asia/Beirut").strftime("%H:%M")
+        except Exception:
+            lab = ts.strftime("%H:%M") + " UTC"
+        lines.append(f"{'🟢' if r['HC'] > r['HO'] else '🔴'} {lab} | ذيل علوي {up:.0f}% | سفلي {lo:.0f}%")
+    return "\n".join(lines)
+
+
+def ha_cands(ctx, off, now):
+    """بيفتّش على آخر HA_SCAN شموع مغلقة (مرة وحدة بكل تشغيل)"""
+    if off != 0 or not HA_ON:
+        return []
+    try:
+        _HA_STATUS[ctx["sym"]] = ha_status(ctx)
+    except Exception as e:
+        print("ha status failed:", repr(e))
+    out = []
+    for o in range(HA_SCAN):
+        out += _ha_one(ctx, o, now)
+    return out
 
 
 def ha_exit(st, sym, ctx, now, day):
@@ -491,12 +527,17 @@ def fetch2(symbol, interval, size):
 
 
 def eval2(ctx, off, now):
-    res = [c for c in _orig_eval(ctx, off, now) if c.get("kind") in KEEP_KINDS]
-    try:
-        res = res + ha_cands(ctx, off, now)
-    except Exception as e:
-        print("heikin engine failed:", repr(e))
+    res = []
+    if KEEP_KINDS - {"NONE"}:
+        try:
+            res = [c for c in _orig_eval(ctx, off, now) if c.get("kind") in KEEP_KINDS]
+        except Exception as e:
+            print("old engines failed:", repr(e))
     if off == 0:
+        try:
+            res = res + ha_cands(ctx, 0, now)
+        except Exception as e:
+            print("heikin engine failed:", repr(e))
         try:
             df5 = ctx.get("df1")
             if df5 is not None and len(df5):
@@ -537,6 +578,8 @@ def tg2(text):
         text = ("✅ البوت شغال — نسخة الهايكن.\n"
                 "القاعدة: بعد حركة صاعدة، شمعة هايكن 15 دقيقة هابطة بدون ذيل علوي = بيع (والعكس شراء).\n"
                 "الستوب خلف آخر شمعة من الحركة، والهدف أول مستوى. تنبيه تسكير عند شمعة بذيلين. ملخص يومي الساعة 21 UTC.")
+    if isinstance(text, str) and text.startswith("🫀 البوت شغال") and _HA_STATUS:
+        text += "\n\nهايكن 15 دقيقة (بتوقيت بيروت، بداية الشمعة):\n" + "\n\n".join(_HA_STATUS.values())
     return _orig_tg(text)
 
 
