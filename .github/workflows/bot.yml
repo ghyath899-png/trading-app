@@ -10,9 +10,6 @@ on:
       test:
         description: "اكتب 1 لإرسال رسالة اختبار فقط"
         default: "0"
-      backtest:
-        description: "اكتب 1 لتشغيل Backtest بدل التشغيل العادي"
-        default: "0"
 
 permissions:
   contents: write
@@ -24,7 +21,7 @@ concurrency:
 jobs:
   run:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -39,21 +36,8 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           TEST_MSG: ${{ github.event.inputs.test }}
-          BACKTEST: ${{ github.event.inputs.backtest }}
-          MIN_ZONE_SCORE: "5"
-          IMP_ATR: "1.4"
           HEARTBEAT_HOURS: "2"
-          PIERCE_ATR: "0.30"
-          BODY_MIN: "0.40"
-          MIN_RANGE_ATR: "0.4"
-          MIN_RR: "1.3"
-          WALL_MIN_SCORE: "10"
-          BOUNCE_ON: "0"
-          RETEST_ON: "0"
-          MSS_ON: "0"
-          MIN_TP_PIPS: "40"
-          MIN_TP1_PIPS: "30"
-        run: python bot2.py
+        run: python bot.py
       - name: Save state
         run: |
           git config user.name "bot"
