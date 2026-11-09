@@ -1,52 +1,29 @@
-name: trading-bot
+name: gold-bot
 
 on:
   schedule:
-    - cron: "*/5 22-23 * * 0"
-    - cron: "*/5 * * * 1-4"
-    - cron: "*/5 0-21 * * 5"
+    - cron: "*/30 * * * *"
   workflow_dispatch:
-    inputs:
-      test:
-        description: "اكتب 1 لإرسال رسالة اختبار فقط"
-        default: "0"
+
+concurrency:
+  group: gold-bot
+  cancel-in-progress: true
 
 permissions:
   contents: write
 
-concurrency:
-  group: trading-bot
-  cancel-in-progress: false
-
 jobs:
   run:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 58
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
-          cache: pip
-          cache-dependency-path: requirements-bot.txt
-      - run: pip install -r requirements-bot.txt
-      - name: Run bot
+          python-version: "3.12"
+      - run: pip install requests
+      - run: python bot.py
         env:
-          TWELVE_DATA_API_KEY: ${{ secrets.TWELVE_DATA_API_KEY }}
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TWELVE_API_KEY: ${{ secrets.TWELVE_API_KEY }}
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          TEST_MSG: ${{ github.event.inputs.test }}
-          HEARTBEAT_HOURS: "2"
-        run: python bot.py
-      - name: Save state
-        run: |
-          git config user.name "bot"
-          git config user.email "bot@users.noreply.github.com"
-          if [ -f state.json ]; then
-            cp state.json /tmp/state.json
-            git fetch origin main
-            git reset --hard origin/main
-            cp /tmp/state.json state.json
-            git add state.json
-            git diff --cached --quiet || (git commit -m "state" && git push)
-          fi
