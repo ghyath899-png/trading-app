@@ -41,9 +41,11 @@ USE_M1 = env("USE_M1", "1") == "1"          # شموع الدقيقة لمتاب
 # ---- الهايكن ----
 HA_MIN_RUN = envi("HA_MIN_RUN", 2)          # أقل عدد شموع بالحركة قبل الانعكاس
 HA_WICK_TOL = envf("HA_WICK_TOL", 0.15)     # أكبر ذيل مسموح (من حجم شمعة الهايكن) لتعتبر "بدون ذيل"
-LOOKBACK = envi("LOOKBACK", 2)              # آخر شمعتين مغلقتين (لو التشغيل تأخر شوي)
-MAX_AGE_MIN = envi("MAX_AGE_MIN", 40)       # آخر شمعة أقدم من هيك = السوق مسكّر
+LOOKBACK = envi("LOOKBACK", 4)              # آخر 4 شموع مغلقة (ساعة) - لو GitHub تأخر بالتشغيل ما نفوّت الإشارة
+MAX_AGE_MIN = envi("MAX_AGE_MIN", 75)       # آخر شمعة أقدم من هيك = السوق مسكّر
 GAP_MIN = envi("GAP_MIN", 70)
+MOVE_FAV = envf("MOVE_FAV", 0.8)            # السعر تحرك بالاتجاه أكتر من هالنسبة من الستوب = ما منطارد
+MOVE_ADV = envf("MOVE_ADV", 0.8)            # السعر رجع ضد الإشارة أكتر من هالنسبة = الإشارة انتهت
 
 # ---- المستويات (للأهداف) ----
 ZONE_HISTORY = envi("ZONE_HISTORY", 2000)
@@ -75,7 +77,7 @@ MAX_PER_DAY = envi("MAX_PER_DAY", 0)            # 0 = بدون حد
 MAX_LOSSES = envi("MAX_LOSSES", 0)              # 0 = بدون حد
 HEARTBEAT_HOURS = envf("HEARTBEAT_HOURS", 0)    # 0 = مطفي
 STATE_FILE = "state.json"
-BOT_VERSION = "2026-11-07-heikin-simple"
+BOT_VERSION = "2026-11-09-heikin-fix"
 SENT = []
 LAST_ERR = {"msg": ""}
 
@@ -339,7 +341,7 @@ def build_ctx(sym, df15, df1, now):
     zones = build_zones(d15c.iloc[-ZONE_HISTORY:], atr, keys, PIV_LEN, psy)
     age_min = (now - (d15c.index[-1] + pd.Timedelta(minutes=15))).total_seconds() / 60
     return {"sym": sym, "pip": pip, "psy": psy, "df15": df15, "df1": df1, "d15c": d15c, "live": live, "atr": atr,
-            "keys": keys, "h1z": h1z, "zones": zones, "fresh": age_min <= MAX_AGE_MIN}
+            "keys": keys, "h1z": h1z, "zones": zones, "fresh": age_min <= MAX_AGE_MIN, "diag": []}
 
 
 def evaluate(ctx, off, now):
@@ -352,15 +354,25 @@ def evaluate(ctx, off, now):
     sig = ha_signal(d, off)
     if not sig:
         return []
+    dr = sig["dir"]
+    buy = dr == 1
+    tclose = (d.index[sig["pos"]] + pd.Timedelta(minutes=15)).strftime("%H:%M")
+    tag = f"إشارة {'شراء' if buy else 'بيع'} (إغلاق {tclose} UTC)"
     plan, why = make_plan(sig, live, ctx)
     if plan is None:
+        ctx["diag"].append(f"{tag} انرفضت: {why}")
+        print("DIAG", ctx["diag"][-1])
         return []
-    dr = sig["dir"]
     ci = float(d["Close"].iloc[sig["pos"]])
     moved = dr * (live - ci)
-    if moved > 0.4 * plan["risk"] or moved < -0.5 * plan["risk"]:       # السعر ابتعد (ما منطارد)
+    if moved > MOVE_FAV * plan["risk"]:                                  # السعر ابتعد (ما منطارد)
+        ctx["diag"].append(f"{tag}: السعر سبق وتحرك {moved:.1f}$ بالاتجاه (ما منطارد)")
+        print("DIAG", ctx["diag"][-1])
         return []
-    buy = dr == 1
+    if moved < -MOVE_ADV * plan["risk"]:                                 # السعر رجع ضد الإشارة
+        ctx["diag"].append(f"{tag}: السعر رجع ضدها {abs(moved):.1f}$ (انتهت)")
+        print("DIAG", ctx["diag"][-1])
+        return []
     ctime = d.index[sig["pos"]].isoformat()
     flip = d.index[sig["pos"] - sig["lag"]].isoformat()
     return [{
@@ -371,6 +383,20 @@ def evaluate(ctx, off, now):
                 f"{'صاعدة بدون ذيل سفلي' if buy else 'هابطة بدون ذيل علوي'}",
                 f"الستوب {'تحت قاع' if buy else 'فوق قمة'} آخر شمعة {'هابطة' if buy else 'صاعدة'}"],
         "key": f"{sym}|HA|{dr}|{ctime}", "zk": f"E|{sym}|{dr}|{flip}"}]
+
+
+def diag_print(ctx):
+    """آخر 4 شموع هايكن بالسجل - للتشخيص"""
+    try:
+        ha = ha_candles(ctx["d15c"]).iloc[-4:]
+        for t, r in ha.iterrows():
+            rg = r["HH"] - r["HL"]
+            up = (r["HH"] - max(r["HO"], r["HC"])) / rg * 100 if rg > 0 else 0
+            lo = (min(r["HO"], r["HC"]) - r["HL"]) / rg * 100 if rg > 0 else 0
+            col = "صاعدة" if r["HC"] > r["HO"] else "هابطة"
+            print(f"DIAG {ctx['sym']} شمعة {t:%H:%M} UTC هايكن {col} | ذيل علوي {up:.0f}% | ذيل سفلي {lo:.0f}%")
+    except Exception as e:
+        print("diag failed:", e)
 
 
 # ---------------- الحالة وتيليجرام ----------------
@@ -484,6 +510,16 @@ def weak_candle(ctx, t, now):
     return up_w >= EXIT_WICK * rg and lo_w >= EXIT_WICK * rg
 
 
+def market_closed_since(t, ctx):
+    """السوق سكّر (نهاية أسبوع/عطلة) بعد ما انفتحت الصفقة؟ (فجوة أكتر من ساعتين بين الشموع)"""
+    d = ctx["d15c"]
+    idx = d.index[d.index >= pd.Timestamp(t["time"]).floor("15min")]
+    if len(idx) < 2:
+        return False
+    gaps = np.diff(idx.values).astype("timedelta64[m]").astype(np.int64)
+    return bool((gaps > 120).any())
+
+
 def manage(st, sym, ctx, now, day):
     pip, live = ctx["pip"], ctx["live"]
     still = []
@@ -493,6 +529,10 @@ def manage(st, sym, ctx, now, day):
             continue
         side = "شراء" if t["dir"] == 1 else "بيع"
         risk = t["risk"]
+        if market_closed_since(t, ctx):                 # صفقة قديمة عبرت نهاية الأسبوع: ما بتنحسب
+            tg(f"⌛ سكّرت صفقة قديمة — {sym} ({side})\n"
+               f"السوق سكّر (نهاية الأسبوع/عطلة) قبل ما توصل لهدف أو ستوب، فما انحسبت بالنتيجة.\n\n" + scn_txt(t))
+            continue
         stage, res = track(t, ctx)
         r_now = t["dir"] * (live - t["entry"]) / risk
         part = TP1_PART
@@ -546,7 +586,7 @@ def try_open(st, sym, ctx, cands, now, day):
         return "السوق مسكّر حالياً"
     ok = [c for c in cands if c["key"] not in st["sig"] and c["zk"] not in st["sig"]]
     if not ok:
-        return "ما في إشارة جديدة"
+        return ctx["diag"][-1] if ctx.get("diag") else "ما في إشارة جديدة"
     best = min(ok, key=lambda x: x["off"])                  # الأحدث
     p, pip = best["plan"], ctx["pip"]
     tg(entry_msg(best, sym, pip))
@@ -573,10 +613,22 @@ def run(now=None):
     now = now if now is not None else pd.Timestamp(datetime.now(timezone.utc).replace(tzinfo=None))
     today = now.strftime("%Y-%m-%d")
     st = load()
-    for k, dflt in (("open", []), ("days", {}), ("sig", {})):
+    for k, dflt in (("open", []), ("days", {}), ("sig", {}), ("gaps", [])):
         if not isinstance(st.get(k), type(dflt)):
             st[k] = dflt
     st["open"] = [t for t in st["open"] if isinstance(t, dict) and t.get("v") == 3 and t.get("sym") in SYMBOLS]
+    # تتبع تأخر تشغيل GitHub (بيأثر على التقاط الإشارات)
+    if st.get("last_run"):
+        try:
+            gap_min = (now - pd.Timestamp(st["last_run"])).total_seconds() / 60
+            print(f"RUN GAP: {gap_min:.0f} دقيقة من آخر تشغيل")
+            if 12 <= gap_min <= 240:
+                st["gaps"].append([now.isoformat(), int(round(gap_min))])
+        except Exception:
+            pass
+    st["last_run"] = now.isoformat()
+    st["gaps"] = [g for g in st["gaps"] if isinstance(g, list) and len(g) == 2
+                  and (now - pd.Timestamp(g[0])).total_seconds() < 10800]
     day = st["days"].setdefault(today, {})
     for k, v in (("sent", 0), ("wins", 0), ("losses", 0), ("r", 0.0), ("summary", False)):
         day.setdefault(k, v)
@@ -587,9 +639,10 @@ def run(now=None):
     st["sig"] = {k: v for k, v in st["sig"].items() if (now - pd.Timestamp(v)).total_seconds() < 86400}
     st.setdefault("last_msg", now.isoformat())
     if st.get("version") != BOT_VERSION:
-        tg("✅ البوت شغال — نسخة الهايكن (بسيطة).\n"
+        tg("✅ البوت شغال — نسخة الهايكن (محدّثة).\n"
            "القاعدة: بعد حركة صاعدة، شمعة هايكن 15 دقيقة هابطة بدون ذيل علوي = بيع (والعكس شراء).\n"
            "الستوب خلف آخر شمعة من الحركة، الهدف الأول أول مستوى والثاني اللي بعدو.\n"
+           "التحديث: نافذة التقاط الإشارة صارت ساعة (بدل 30 دقيقة)، وسبب أي إشارة مرفوضة بيظهر بالرسالة الدورية.\n"
            "رسالة عند كل هدف وعند الستوب. ملخص يومي الساعة 21 UTC.")
         st["version"] = BOT_VERSION
 
@@ -614,11 +667,13 @@ def run(now=None):
 
     reasons = {}
     for sym, ctx in ctxs.items():
+        diag_print(ctx)
         manage(st, sym, ctx, now, day)
         cands = []
         for off in range(LOOKBACK):
             cands += evaluate(ctx, off, now)
         reasons[sym] = try_open(st, sym, ctx, cands, now, day)
+        print("RESULT", sym, "|", reasons[sym] or "إشارة انبعتت")
 
     if now.hour >= 21 and not day["summary"]:
         tot = {}
@@ -638,8 +693,11 @@ def run(now=None):
         for s0 in fresh_syms:
             c0 = ctxs[s0]
             parts.append(f"▪️ {s0}\nالسعر: {fmt(c0['live'], c0['pip'])}\nالحالة: {reasons.get(s0) or 'ما في إشارة جديدة'}")
+        mx = max((g[1] for g in st["gaps"]), default=0)
+        gap_line = (f"⏱ أكبر تأخير بتشغيل GitHub (آخر 3 ساعات): {mx} دقيقة" if mx
+                    else "⏱ تشغيل GitHub منتظم (آخر 3 ساعات)")
         tg(f"🫀 البوت شغال ({now:%H:%M} UTC)\n\n" + "\n\n".join(parts) + "\n\n"
-           f"اليوم: إشارات {day['sent']} | رابحة {day['wins']} | خاسرة {day['losses']} | صافي {day['r']:+.1f}R")
+           f"اليوم: إشارات {day['sent']} | رابحة {day['wins']} | خاسرة {day['losses']} | صافي {day['r']:+.1f}R\n{gap_line}")
     if SENT:
         st["last_msg"] = now.isoformat()
     save(st)
