@@ -23,9 +23,10 @@ def now_utc():
 
 def send(text):
     try:
-        requests.post(
+        r = requests.post(
             f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage",
             data={"chat_id": TG_CHAT, "text": text}, timeout=20)
+        print("telegram:", r.status_code, r.text[:200], flush=True)
     except Exception as e:
         print("telegram error:", e)
 
@@ -255,7 +256,11 @@ def main():
     end = now_utc() + timedelta(minutes=RUN_MINUTES)
     last_slot = None
     last_mon = 0
-    print("bot started", now_utc().isoformat(), "trade open:", bool(st.get("trade")))
+    print("bot started", now_utc().isoformat(), "trade open:", bool(st.get("trade")), flush=True)
+    test = td_series("15min", 3)
+    print("data check:", len(test), "candles, last:", test[-1]["t"] if test else None, flush=True)
+    if os.environ.get("GITHUB_EVENT_NAME") == "workflow_dispatch":
+        send("✅ البوت اشتغل وعم يراقب الذهب")
     while now_utc() < end:
         n = now_utc()
         if st.get("trade"):
