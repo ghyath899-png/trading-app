@@ -22,8 +22,9 @@ jobs:
         with:
           python-version: "3.12"
       - run: pip install requests
-      - run: python bot.py
+      - run: python -u bot.py
         env:
+          PYTHONUNBUFFERED: "1"
           TWELVE_API_KEY: ${{ secrets.TWELVE_API_KEY || secrets.TWELVE_DATA_API_KEY || secrets.TWELVEDATA_API_KEY || secrets.TWELVEDATA_KEY || secrets.API_KEY }}
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN || secrets.TELEGRAM_BOT_TOKEN || secrets.BOT_TOKEN || secrets.TG_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID || secrets.CHAT_ID || secrets.TG_CHAT_ID || secrets.TELEGRAM_CHAT }}
